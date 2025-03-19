@@ -1,0 +1,52 @@
+# Dependencias
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Salida de compilación
+dist/
+build/
+tmp/
+temp/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Entorno
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Tests
+coverage/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Others
+*.tgz
+*.tar.gz
+
+# Optional: Next.js / Vite / Nuxt / etc outputs (if applicable)
+.next/
+out/
+.vercel/
+.nuxt/
+.storybook/
+
+# Optional: TypeScript
+*.tsbuildinfo
