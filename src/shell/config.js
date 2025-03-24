@@ -1,3 +1,7 @@
+/**
+ * External clients setup (Supabase, Zoho)
+ * Part of the imperative shell that handles side effects
+ */
 import 'dotenv/config'
 import { createClient } from '@supabase/supabase-js'
 
