@@ -197,6 +197,14 @@ export const fetchUserActivity = (queryFn) => async (userId, limit = 10) => {
 export const createSupabaseQueryFn = (supabaseClient) => async (params) => {
   const { table, filters = {}, select = '*', order, limit, ascending = true } = params;
   
+  console.log("Supabase query:", {
+    table,
+    filters,
+    select,
+    order,
+    limit
+  });
+  
   let query = supabaseClient.from(table).select(select);
   
   // Apply filters
@@ -222,7 +230,9 @@ export const createSupabaseQueryFn = (supabaseClient) => async (params) => {
     query = query.limit(limit);
   }
   
-  return query;
+  // Execute the query and return the result
+  const { data, error } = await query;
+  return { data, error };
 };
 
 /**
@@ -231,5 +241,23 @@ export const createSupabaseQueryFn = (supabaseClient) => async (params) => {
  * @returns {PersistFn} - Persist function that works with our event store
  */
 export const createSupabasePersistFn = (supabaseClient) => async (table, data) => {
-  return supabaseClient.from(table).insert([data]).select();
+  console.log(`Persisting data to table '${table}':`, {
+    dataKeys: Object.keys(data),
+    tableUsed: table
+  });
+  
+  try {
+    const result = await supabaseClient.from(table).insert([data]).select();
+    
+    if (result.error) {
+      console.error(`Error persisting to '${table}':`, result.error);
+    } else {
+      console.log(`Successfully persisted to '${table}'`);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error(`Exception when persisting to '${table}':`, error);
+    return { data: null, error };
+  }
 };
