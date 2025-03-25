@@ -40,8 +40,9 @@ app.use(async (ctx, next) => {
 });
 
 // Set up API routes
-app.use(setupApiRoutes(deps).routes());
-app.use(setupApiRoutes(deps).allowedMethods());
+const apiRouter = setupApiRoutes(deps);
+app.use(apiRouter.routes());
+app.use(apiRouter.allowedMethods());
 
 /**
  * Start server

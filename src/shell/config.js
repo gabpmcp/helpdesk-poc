@@ -4,6 +4,7 @@
  */
 import 'dotenv/config'
 import { createClient } from '@supabase/supabase-js'
+import { Result, tryCatchAsync, deepFreeze } from '../utils/functional.js'
 
 const { 
   ZOHO_AUTH_TOKEN, 
@@ -19,32 +20,118 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) throw new Error('Missing Supabase en
 // Supabase client for event store
 export const supabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-// Zoho client for ticket management
+// Zoho client for ticket management and authentication
 export const zohoClient = {
-  get: (endpoint) =>
-    fetch(`${ZOHO_BASE_URL}${endpoint}`, {
-      headers: { Authorization: `Zoho-oauthtoken ${ZOHO_AUTH_TOKEN}` },
-    }).then(res => res.json()),
+  // GET request to Zoho API
+  get: async (endpoint) => {
+    return tryCatchAsync(async () => {
+      const response = await fetch(`${ZOHO_BASE_URL}${endpoint}`, {
+        headers: { Authorization: `Zoho-oauthtoken ${ZOHO_AUTH_TOKEN}` },
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        return Result.error({
+          status: response.status,
+          message: errorData.message || `HTTP error ${response.status}`,
+          details: errorData
+        });
+      }
+      
+      const data = await response.json();
+      return Result.ok(deepFreeze(data));
+    })();
+  },
 
-  post: (endpoint, body) =>
-    fetch(`${ZOHO_BASE_URL}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Zoho-oauthtoken ${ZOHO_AUTH_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    }).then(res => res.json()),
+  // POST request to Zoho API
+  post: async (endpoint, body) => {
+    return tryCatchAsync(async () => {
+      const response = await fetch(`${ZOHO_BASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Zoho-oauthtoken ${ZOHO_AUTH_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        return Result.error({
+          status: response.status,
+          message: errorData.message || `HTTP error ${response.status}`,
+          details: errorData
+        });
+      }
+      
+      const data = await response.json();
+      return Result.ok(deepFreeze(data));
+    })();
+  },
 
-  put: (endpoint, body) =>
-    fetch(`${ZOHO_BASE_URL}${endpoint}`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Zoho-oauthtoken ${ZOHO_AUTH_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    }).then(res => res.json()),
+  // PUT request to Zoho API
+  put: async (endpoint, body) => {
+    return tryCatchAsync(async () => {
+      const response = await fetch(`${ZOHO_BASE_URL}${endpoint}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Zoho-oauthtoken ${ZOHO_AUTH_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        return Result.error({
+          status: response.status,
+          message: errorData.message || `HTTP error ${response.status}`,
+          details: errorData
+        });
+      }
+      
+      const data = await response.json();
+      return Result.ok(deepFreeze(data));
+    })();
+  },
+  
+  // Authenticate user with Zoho
+  authenticate: async (email, password) => {
+    return tryCatchAsync(async () => {
+      const response = await fetch(`${ZOHO_BASE_URL}/auth/validate`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Zoho-oauthtoken ${ZOHO_AUTH_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        return Result.error({
+          status: response.status,
+          message: errorData.message || 'Authentication failed',
+          details: errorData
+        });
+      }
+      
+      const data = await response.json();
+      
+      if (!data.status || data.status !== 'success') {
+        return Result.error({
+          status: 401,
+          message: data.message || 'Invalid credentials',
+          details: data
+        });
+      }
+      
+      return Result.ok(deepFreeze({
+        userId: data.data?.userId,
+        userDetails: data.data
+      }));
+    })();
+  }
 }
 
 export const config = { PORT }

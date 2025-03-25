@@ -3,6 +3,7 @@
  * Pure validation functions with no side effects
  */
 import { z } from 'zod';
+import { Result, deepFreeze } from '../utils/functional.js';
 
 /**
  * Base command schema that all commands must satisfy
@@ -20,6 +21,14 @@ export const loginAttemptSchema = baseCommandSchema.extend({
   type: z.literal('LOGIN_ATTEMPT'),
   email: z.string().email(),
   password: z.string()
+});
+
+/**
+ * Refresh token command schema
+ */
+export const refreshTokenSchema = baseCommandSchema.extend({
+  type: z.literal('REFRESH_TOKEN'),
+  refreshToken: z.string().min(1, "Refresh token is required")
 });
 
 /**
@@ -74,43 +83,81 @@ export const fetchDashboardSchema = baseCommandSchema.extend({
 });
 
 /**
+ * Maps a Zod validation result to our Result type
+ * @param {Object} zodResult - Result from Zod's safeParse
+ * @returns {Object} A Result object
+ */
+const mapZodResultToResult = (zodResult) => {
+  if (zodResult.success) {
+    return Result.ok(deepFreeze(zodResult.data));
+  } else {
+    return Result.error(deepFreeze({
+      message: 'Validation error',
+      details: zodResult.error.format()
+    }));
+  }
+};
+
+/**
  * Validates a command based on its type
- * Returns a result object with success flag and data/error
+ * Returns a Result object with success or error
  */
 export const validateCommand = (command) => {
-  if (!command || typeof command !== 'object' || !command.type) {
-    return { 
-      success: false, 
-      error: { message: 'Invalid command format' } 
-    };
+  // Early validation for null/undefined or non-object commands
+  if (!command || typeof command !== 'object') {
+    return Result.error(deepFreeze({
+      message: 'Invalid command format',
+      details: { received: typeof command }
+    }));
+  }
+  
+  // Early validation for missing type
+  if (!command.type) {
+    return Result.error(deepFreeze({
+      message: 'Missing command type',
+      details: { received: command }
+    }));
   }
 
+  // Validate based on command type
+  const validationResult = validateByCommandType(command);
+  
+  // Return the result (already frozen by mapZodResultToResult)
+  return validationResult;
+};
+
+/**
+ * Pure function to validate a command by its type
+ * @param {Object} command - The command to validate
+ * @returns {Object} A Result object
+ */
+const validateByCommandType = (command) => {
   switch (command.type) {
     case 'LOGIN_ATTEMPT':
-      return loginAttemptSchema.safeParse(command);
+      return mapZodResultToResult(loginAttemptSchema.safeParse(command));
+      
+    case 'REFRESH_TOKEN':
+      return mapZodResultToResult(refreshTokenSchema.safeParse(command));
       
     case 'CREATE_TICKET':
-      return createTicketSchema.safeParse(command);
+      return mapZodResultToResult(createTicketSchema.safeParse(command));
       
     case 'UPDATE_TICKET':
-      return updateTicketSchema.safeParse(command);
+      return mapZodResultToResult(updateTicketSchema.safeParse(command));
       
     case 'ADD_COMMENT':
-      return addCommentSchema.safeParse(command);
+      return mapZodResultToResult(addCommentSchema.safeParse(command));
       
     case 'ESCALATE_TICKET':
-      return escalateTicketSchema.safeParse(command);
+      return mapZodResultToResult(escalateTicketSchema.safeParse(command));
       
     case 'FETCH_DASHBOARD':
-      return fetchDashboardSchema.safeParse(command);
+      return mapZodResultToResult(fetchDashboardSchema.safeParse(command));
       
     default:
-      return { 
-        success: false, 
-        error: { 
-          message: 'Unknown command type',
-          details: { type: command.type } 
-        } 
-      };
+      return Result.error(deepFreeze({
+        message: 'Unknown command type',
+        details: { type: command.type }
+      }));
   }
 };

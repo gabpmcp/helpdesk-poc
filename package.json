@@ -4,12 +4,13 @@
     "type": "module",
     "scripts": {
         "start": "node src/index.js",
-        "dev": "nodemon src/index.js"
+        "dev": "nodemon --exec node --require dotenv/config src/index.js"
     },
     "dependencies": {
         "@koa/router": "^12.0.0",
         "@supabase/supabase-js": "^2.39.7",
         "dotenv": "^16.0.3",
+        "jsonwebtoken": "^9.0.2",
         "koa": "^2.15.0",
         "koa-bodyparser": "^4.4.1",
         "uuid": "^9.0.1",
