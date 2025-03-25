@@ -34,15 +34,16 @@ export const storeEvent = (persistFn) => async (event) => {
     });
 
     // Insert into the events table with the new schema
-    const result = await persistFn(EVENTS_TABLE, {
+    const eventResult = await persistFn(EVENTS_TABLE, {
       id: generateUUID(),
       user_id: event.userId,
       type: event.type,
       payload: eventWithTimestamp
     });
-      
-    if (result.error) {
-      return Promise.reject(new Error(`Failed to store event: ${result.error.message}`));
+    
+    // persistFn ahora devuelve un Result, así que necesitamos manejarlo adecuadamente
+    if (eventResult.isError) {
+      throw new Error(`Failed to store event: ${eventResult.unwrapError().message}`);
     }
     
     // For authentication events, also track in user_activity table
@@ -51,16 +52,23 @@ export const storeEvent = (persistFn) => async (event) => {
       event.type === 'TOKEN_REFRESHED' || 
       event.type === 'INVALID_REFRESH_TOKEN'
     ) {
-      const activityResult = await persistFn(USER_ACTIVITY_TABLE, {
+      // Usar un enfoque funcional para manejar el registro de actividad del usuario
+      // No esperamos a que se complete, para no bloquear el flujo principal
+      persistFn(USER_ACTIVITY_TABLE, {
         user_id: event.userId,
         activity_type: event.type,
         timestamp: eventWithTimestamp.timestamp
+      })
+      .then(result => {
+        if (result.isError) {
+          console.error(`Failed to store user activity: ${result.unwrapError().message}`);
+        } else {
+          console.log(`Successfully stored user activity for ${event.type}`);
+        }
+      })
+      .catch(error => {
+        console.error(`Exception storing user activity: ${error.message}`);
       });
-        
-      if (activityResult.error) {
-        console.error(`Failed to store user activity: ${activityResult.error.message}`);
-        // Continue execution even if activity logging fails
-      }
     }
     
     return eventWithTimestamp;
@@ -87,13 +95,14 @@ export const fetchEventsByUserAndFilters = (queryFn) => async (params) => {
     
     const result = await queryFn(queryParams);
       
-    if (result.error) {
-      return Promise.reject(new Error(`Failed to fetch events: ${result.error.message}`));
+    if (result.isError) {
+      throw new Error(`Failed to fetch events: ${result.unwrapError().message}`);
     }
     
     // Map and freeze each event to ensure immutability
-    const events = (result.data?.map(item => item.payload) || []).map(deepFreeze);
-    return events;
+    return (result.unwrap() || [])
+      .map(item => item.payload)
+      .map(deepFreeze);
   })();
 };
 
@@ -195,44 +204,57 @@ export const fetchUserActivity = (queryFn) => async (userId, limit = 10) => {
  * @returns {QueryFn} - Query function that works with our event store
  */
 export const createSupabaseQueryFn = (supabaseClient) => async (params) => {
-  const { table, filters = {}, select = '*', order, limit, ascending = true } = params;
-  
-  console.log("Supabase query:", {
-    table,
-    filters,
-    select,
-    order,
-    limit
-  });
-  
-  let query = supabaseClient.from(table).select(select);
-  
-  // Apply filters
-  Object.entries(filters).forEach(([key, value]) => {
-    if (key === 'user_id' && value) {
-      query = query.eq('user_id', value);
-    } else if (key === 'type' && value) {
-      query = query.eq('type', value);
-    } else if (key === 'types' && Array.isArray(value) && value.length > 0) {
-      query = query.in('type', value);
-    } else if (key === 'ticketId' && value) {
-      query = query.contains('payload', { ticketId: value });
+  return tryCatchAsync(async () => {
+    const { table, filters = {}, select = '*', order, limit, ascending = true } = params;
+    
+    console.log("Supabase query:", {
+      table,
+      filters,
+      select,
+      order,
+      limit
+    });
+    
+    // Crear la consulta base
+    const baseQuery = supabaseClient.from(table).select(select);
+    
+    // Aplicar filtros de forma funcional
+    const withFilters = Object.entries(filters).reduce((query, [key, value]) => {
+      if (key === 'user_id' && value) {
+        return query.eq('user_id', value);
+      } else if (key === 'type' && value) {
+        return query.eq('type', value);
+      } else if (key === 'types' && Array.isArray(value) && value.length > 0) {
+        return query.in('type', value);
+      } else if (key === 'ticketId' && value) {
+        return query.contains('payload', { ticketId: value });
+      }
+      return query;
+    }, baseQuery);
+    
+    // Aplicar ordenamiento de forma funcional
+    const withOrder = order 
+      ? withFilters.order(order, { ascending }) 
+      : withFilters;
+    
+    // Aplicar límite de forma funcional
+    const finalQuery = limit 
+      ? withOrder.limit(limit) 
+      : withOrder;
+    
+    // Execute the query and handle errors
+    const { data, error } = await finalQuery;
+    
+    if (error) {
+      throw new Error(JSON.stringify({
+        message: `Database query error: ${error.message}`,
+        details: error,
+        code: error.code
+      }));
     }
-  });
-  
-  // Apply ordering
-  if (order) {
-    query = query.order(order, { ascending });
-  }
-  
-  // Apply limit
-  if (limit) {
-    query = query.limit(limit);
-  }
-  
-  // Execute the query and return the result
-  const { data, error } = await query;
-  return { data, error };
+    
+    return deepFreeze(data);
+  })();
 };
 
 /**
@@ -241,23 +263,23 @@ export const createSupabaseQueryFn = (supabaseClient) => async (params) => {
  * @returns {PersistFn} - Persist function that works with our event store
  */
 export const createSupabasePersistFn = (supabaseClient) => async (table, data) => {
-  console.log(`Persisting data to table '${table}':`, {
-    dataKeys: Object.keys(data),
-    tableUsed: table
-  });
-  
-  try {
-    const result = await supabaseClient.from(table).insert([data]).select();
+  return tryCatchAsync(async () => {
+    console.log(`Persisting data to table '${table}':`, {
+      dataKeys: Object.keys(data),
+      tableUsed: table
+    });
     
-    if (result.error) {
-      console.error(`Error persisting to '${table}':`, result.error);
-    } else {
-      console.log(`Successfully persisted to '${table}'`);
+    const { data: insertedData, error } = await supabaseClient.from(table).insert([data]).select();
+    
+    if (error) {
+      throw new Error(JSON.stringify({
+        message: `Database insert error: ${error.message}`,
+        details: error,
+        code: error.code
+      }));
     }
     
-    return result;
-  } catch (error) {
-    console.error(`Exception when persisting to '${table}':`, error);
-    return { data: null, error };
-  }
+    console.log(`Successfully persisted to '${table}'`);
+    return deepFreeze(insertedData?.[0] || null);
+  })();
 };

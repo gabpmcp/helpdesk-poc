@@ -283,10 +283,38 @@ const createExternalServiceFunctions = (deps) => {
   const queryFn = deps.supabaseClient ? createSupabaseQueryFn(deps.supabaseClient) : null;
   const persistFn = deps.supabaseClient ? createSupabasePersistFn(deps.supabaseClient) : null;
   
-  // Create primitive authentication function
-  const authenticate = deps.zohoClient ? 
-    (email, password) => deps.zohoClient.authenticate(email, password) : 
-    null;
+  // Create primitive authentication function - with mock for development/testing
+  const authenticate = (() => {
+    if (process.env.NODE_ENV === 'test' || process.env.MOCK_AUTH === 'true') {
+      // Mock authentication function for testing
+      return (email, password) => {
+        console.log('[MOCK AUTH] Testing credentials for:', email);
+        
+        // For testing, we'll accept a specific test account
+        if (email === 'test@example.com' && password === 'password123') {
+          console.log('[MOCK AUTH] Valid test credentials');
+          return Promise.resolve(Result.ok({
+            userId: 'test-user-id',
+            userDetails: {
+              name: 'Test User',
+              email: 'test@example.com',
+              role: 'user'
+            }
+          }));
+        }
+        
+        // Reject all other credentials
+        console.log('[MOCK AUTH] Invalid credentials');
+        return Promise.resolve(Result.error(new Error('Invalid credentials')));
+      };
+    } else if (deps.zohoClient) {
+      // Real authentication function using Zoho
+      return (email, password) => deps.zohoClient.authenticate(email, password);
+    } else {
+      // No authentication function available
+      return null;
+    }
+  })();
   
   // Create primitive ticket operation functions
   const createTicket = deps.zohoClient ?

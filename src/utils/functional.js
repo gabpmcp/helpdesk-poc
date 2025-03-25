@@ -47,18 +47,22 @@ export const Result = {
  * @returns {Object} The frozen object
  */
 export const deepFreeze = (obj) => {
+  // Return early for null, non-objects, or already frozen objects
+  if (obj === null || typeof obj !== "object" || Object.isFrozen(obj)) {
+    return obj;
+  }
+  
   // Get all properties, including non-enumerable ones
   const propNames = Object.getOwnPropertyNames(obj);
   
-  // Freeze properties before freezing the object
-  for (const name of propNames) {
+  // Freeze properties using functional approach
+  propNames.reduce((_, name) => {
     const value = obj[name];
-    
-    // Skip null and non-objects
-    if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    if (value && typeof value === "object") {
       deepFreeze(value);
     }
-  }
+    return null; // We don't actually use the accumulator
+  }, null);
   
   return Object.freeze(obj);
 };
@@ -78,6 +82,27 @@ export const compose = (...fns) => (x) =>
  */
 export const pipe = (...fns) => (x) => 
   fns.reduce((acc, fn) => fn(acc), x);
+
+/**
+ * Asynchronous functional composition (left to right)
+ * Properly chains promises, awaiting each step before proceeding to the next
+ * Uses a purely functional approach with reduce instead of imperative loops
+ * @param {...Function} fns - Async or sync functions to compose
+ * @returns {Function} Async composed function
+ */
+export const pipeAsync = (...fns) => async (initialValue) => {
+  // Si no hay funciones, devolver el valor inicial
+  if (fns.length === 0) {
+    return initialValue;
+  }
+  
+  // Usar reduce para componer las funciones de manera funcional
+  // Comenzamos con una promesa resuelta con el valor inicial
+  return fns.reduce(
+    (promiseChain, fn) => promiseChain.then(fn),
+    Promise.resolve(initialValue)
+  );
+};
 
 /**
  * Creates a curried version of a function
@@ -148,9 +173,17 @@ export const safeSet = (obj, path, value) => {
 export const tryCatch = (fn) => (...args) => {
   try {
     const result = fn(...args);
+    
+    // Prevenir anidamiento de Results
+    if (result && typeof result === 'object' && 
+        'isOk' in result && 'isError' in result && 
+        (result.status === 'OK' || result.status === 'ERROR')) {
+      return result; // Ya es un Result, devolverlo directamente
+    }
+    
     return Result.ok(result);
   } catch (error) {
-    return Result.error(error);
+    return Result.error(error instanceof Error ? error : new Error(String(error)));
   }
 };
 
@@ -162,22 +195,33 @@ export const tryCatch = (fn) => (...args) => {
 export const tryCatchAsync = (fn) => async (...args) => {
   try {
     const result = await fn(...args);
+    
+    // Prevenir anidamiento de Results
+    if (result && typeof result === 'object' && 
+        'isOk' in result && 'isError' in result && 
+        (result.status === 'OK' || result.status === 'ERROR')) {
+      return result; // Ya es un Result, devolverlo directamente
+    }
+    
     return Result.ok(result);
   } catch (error) {
-    return Result.error(error);
+    return Result.error(error instanceof Error ? error : new Error(String(error)));
   }
 };
 
 /**
- * Creates a new object with the specified keys omitted
+ * Creates a new object without the specified keys
  * @param {Object} obj - The source object
  * @param {Array<String>} keys - Keys to omit
  * @returns {Object} A new object without the specified keys
  */
 export const omit = (obj, keys) => {
-  const result = { ...obj };
-  keys.forEach(key => delete result[key]);
-  return result;
+  return Object.keys(obj)
+    .filter(key => !keys.includes(key))
+    .reduce((acc, key) => {
+      acc[key] = obj[key];
+      return acc;
+    }, {});
 };
 
 /**
@@ -187,12 +231,11 @@ export const omit = (obj, keys) => {
  * @returns {Object} A new object with only the specified keys
  */
 export const pick = (obj, keys) => {
-  return keys.reduce((acc, key) => {
-    if (obj.hasOwnProperty(key)) {
-      acc[key] = obj[key];
-    }
-    return acc;
-  }, {});
+  return keys.reduce((acc, key) => 
+    obj.hasOwnProperty(key) 
+      ? { ...acc, [key]: obj[key] }
+      : acc
+  , {});
 };
 
 /**

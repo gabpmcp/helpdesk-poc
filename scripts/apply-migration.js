@@ -73,13 +73,19 @@ async function applyMigrations() {
     
     console.log(`Found ${migrationFiles.length} migration files to apply.`);
     
-    // Apply each migration
-    let successCount = 0;
-    for (const file of migrationFiles) {
-      const filePath = path.join(migrationsDir, file);
-      const success = await applyMigration(filePath);
-      if (success) successCount++;
-    }
+    // Apply each migration using functional approach
+    const migrationResults = await Promise.all(
+      migrationFiles.map(async (file) => {
+        const filePath = path.join(migrationsDir, file);
+        return await applyMigration(filePath);
+      })
+    );
+    
+    // Count successes using reduce
+    const successCount = migrationResults.reduce(
+      (count, success) => success ? count + 1 : count, 
+      0
+    );
     
     console.log(`Applied ${successCount}/${migrationFiles.length} migrations successfully.`);
     

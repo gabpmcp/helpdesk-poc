@@ -4,7 +4,7 @@
  */
 import { v4 as generateUUID } from 'uuid';
 import jwt from 'jsonwebtoken';
-import { Result, tryCatchAsync, deepFreeze, pipe } from '../utils/functional.js';
+import { Result, tryCatchAsync, deepFreeze, pipe, pipeAsync } from '../utils/functional.js';
 
 // JWT configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -86,138 +86,177 @@ export const notifyExternal = async (event, deps) => {
  * Validates credentials and generates appropriate response event
  * @param {Object} event - Login request event
  * @param {NotificationDeps} deps - Dependencies for notification operations
+ * @returns {Promise<Result>} - Result containing the login event
  */
 const handleLoginRequested = async (event, deps) => {
-  // Use pipe para crear un pipeline funcional de procesamiento
-  const processLogin = pipe(
+  try {
     // Paso 1: Verificar credenciales
-    async () => {
-      console.log('Verifying credentials for:', event.email);
-      return await verifyCredentials(event.email, event.password, deps.authenticate);
-    },
+    console.log('Verifying credentials for:', event.email);
     
-    // Paso 2: Crear el evento apropiado basado en el resultado de autenticación
-    async (authResult) => {
-      console.log('Authentication result:', authResult);
+    // Manejar el caso donde no hay función de autenticación disponible
+    if (!deps.authenticate) {
+      console.warn('No authenticate function provided, authentication will fail');
+      const authResult = {
+        isAuthenticated: false,
+        reason: 'Authentication service not available'
+      };
       
-      if (!authResult.isAuthenticated) {
-        // Crear evento LOGIN_FAILED (patrón inmutable)
-        const loginFailedEvent = deepFreeze({
-          type: 'LOGIN_FAILED',
-          userId: event.userId,
-          email: event.email,
-          reason: authResult.reason || 'Invalid credentials',
-          timestamp: event.timestamp
-        });
-        
-        console.log('Login failed, storing event');
-        // Almacenar el evento de fallo de inicio de sesión
-        const storeResult = await deps.storeEvent(loginFailedEvent);
-        
-        if (!storeResult.isOk) {
-          console.error('Failed to store LOGIN_FAILED event:', storeResult.unwrapError());
-          return Result.error('Failed to store LOGIN_FAILED event');
-        }
-        
-        return Result.ok(loginFailedEvent);
-      }
-      
-      // Crear evento LOGIN_SUCCEEDED (patrón inmutable)
-      const loginSucceededEvent = deepFreeze({
-        type: 'LOGIN_SUCCEEDED',
-        userId: event.userId,
-        email: event.email,
-        zohoUserId: authResult.userId,
-        timestamp: event.timestamp
-      });
-      
-      console.log('Login succeeded, storing event');
-      // Almacenar el evento de inicio de sesión exitoso
-      const storeResult = await deps.storeEvent(loginSucceededEvent);
-      
-      if (!storeResult.isOk) {
-        console.error('Failed to store LOGIN_SUCCEEDED event:', storeResult.unwrapError());
-        return Result.error('Failed to store LOGIN_SUCCEEDED event');
-      }
-      
-      return Result.ok(loginSucceededEvent);
-    },
-    
-    // Paso 3: Generar tokens para eventos de inicio de sesión exitosos
-    async (eventResult) => {
-      if (!eventResult.isOk) {
-        return eventResult;
-      }
-      
-      const loginEvent = eventResult.unwrap();
-      
-      if (loginEvent.type === 'LOGIN_SUCCEEDED') {
-        console.log('Generating tokens for successful login');
-        return await handleLoginSucceeded(loginEvent, deps);
-      }
-      
-      return eventResult;
+      // Crear y almacenar evento LOGIN_FAILED
+      return await handleFailedLogin(event, authResult, deps);
     }
-  );
-  
-  // Ejecutar el pipeline y manejar errores
-  const result = await tryCatchAsync(async () => {
-    return await processLogin();
-  })();
-  
-  if (!result.isOk) {
-    console.error('Login process failed:', result.unwrapError());
     
-    // Crear evento LOGIN_FAILED con información de error (patrón inmutable)
-    const loginFailedEvent = deepFreeze({
-      type: 'LOGIN_FAILED',
-      userId: event.userId,
-      email: event.email,
-      reason: 'Authentication service unavailable',
-      error: result.unwrapError().message || 'Unknown error',
-      timestamp: event.timestamp
-    });
+    // Verificar credenciales (ahora devuelve un Result directamente)
+    const authResultContainer = await verifyCredentials(event.email, event.password, deps.authenticate);
     
-    // Intentar almacenar el evento de fallo
-    try {
-      await deps.storeEvent(loginFailedEvent);
-    } catch (error) {
-      console.error('Failed to store error event:', error);
+    // Manejar errores en la verificación de credenciales
+    if (authResultContainer.isError) {
+      console.error('Error during credential verification:', authResultContainer.unwrapError());
+      return Result.error(new Error('Authentication failed due to system error'));
+    }
+    
+    // Extraer el resultado de autenticación
+    const authResult = authResultContainer.unwrap();
+    console.log('Authentication result:', authResult);
+    
+    // Manejar el resultado de autenticación
+    if (!authResult.isAuthenticated) {
+      return await handleFailedLogin(event, authResult, deps);
+    } else {
+      return await handleSuccessfulLogin(event, authResult, deps);
+    }
+  } catch (error) {
+    console.error('Unexpected error in handleLoginRequested:', error);
+    return Result.error(error);
+  }
+};
+
+/**
+ * Handles a failed login attempt
+ * @param {Object} event - Original login request event
+ * @param {Object} authResult - Authentication result
+ * @param {NotificationDeps} deps - Dependencies for notification operations
+ * @returns {Promise<Result>} - Result containing the LOGIN_FAILED event
+ */
+const handleFailedLogin = async (event, authResult, deps) => {
+  // Crear evento LOGIN_FAILED (patrón inmutable)
+  const loginFailedEvent = deepFreeze({
+    type: 'LOGIN_FAILED',
+    userId: event.userId,
+    email: event.email,
+    reason: authResult.reason || 'Invalid credentials',
+    timestamp: event.timestamp
+  });
+  
+  console.log('Login failed, storing event');
+  
+  try {
+    // Almacenar el evento de fallo de inicio de sesión
+    const storeResult = await deps.storeEvent(loginFailedEvent);
+    
+    if (storeResult.isError) {
+      console.error('Failed to store LOGIN_FAILED event:', storeResult.unwrapError());
+      return Result.error(new Error(`Failed to store LOGIN_FAILED event: ${storeResult.unwrapError().message}`));
     }
     
     return Result.ok(loginFailedEvent);
+  } catch (error) {
+    console.error('Exception storing LOGIN_FAILED event:', error);
+    return Result.error(new Error(`Exception storing LOGIN_FAILED event: ${error.message}`));
   }
+};
+
+/**
+ * Handles a successful login attempt
+ * @param {Object} event - Original login request event
+ * @param {Object} authResult - Authentication result
+ * @param {NotificationDeps} deps - Dependencies for notification operations
+ * @returns {Promise<Result>} - Result containing the LOGIN_SUCCEEDED event with tokens
+ */
+const handleSuccessfulLogin = async (event, authResult, deps) => {
+  // Crear evento LOGIN_SUCCEEDED (patrón inmutable)
+  const loginSucceededEvent = deepFreeze({
+    type: 'LOGIN_SUCCEEDED',
+    userId: event.userId,
+    email: event.email,
+    zohoUserId: authResult.userId,
+    timestamp: event.timestamp
+  });
   
-  return result;
+  console.log('Login succeeded, storing event');
+  
+  try {
+    // Almacenar el evento de inicio de sesión exitoso
+    const storeResult = await deps.storeEvent(loginSucceededEvent);
+    
+    if (storeResult.isError) {
+      console.error('Failed to store LOGIN_SUCCEEDED event:', storeResult.unwrapError());
+      return Result.error(new Error(`Failed to store LOGIN_SUCCEEDED event: ${storeResult.unwrapError().message}`));
+    }
+    
+    // Generar tokens para el evento de inicio de sesión exitoso
+    console.log('Generating tokens for successful login');
+    return await handleLoginSucceeded(loginSucceededEvent, deps);
+  } catch (error) {
+    console.error('Exception storing LOGIN_SUCCEEDED event:', error);
+    return Result.error(new Error(`Exception storing LOGIN_SUCCEEDED event: ${error.message}`));
+  }
 };
 
 /**
  * Verifies user credentials
- * Returns authentication result with user ID if successful
+ * Returns a Result with authentication result with user ID if successful
  * @param {string} email - User email
  * @param {string} password - User password
  * @param {AuthenticateFn} authenticate - Function to authenticate users
- * @returns {Promise<AuthResult>} - Authentication result
+ * @returns {Promise<Result>} - Result containing authentication result
  */
 const verifyCredentials = async (email, password, authenticate) => {
-  // Use the authenticate function from dependencies
-  const authResult = await authenticate(email, password);
-  
-  if (authResult.isOk) {
-    const userData = authResult.unwrap();
-    return {
-      isAuthenticated: true,
-      userId: userData.userId,
-      userDetails: userData.userDetails
-    };
+  try {
+    console.log('[ZOHO] Authenticating user:', email);
+    
+    if (!authenticate || typeof authenticate !== 'function') {
+      console.error('Authentication function not available');
+      return Result.ok({
+        isAuthenticated: false,
+        reason: 'Authentication service not available'
+      });
+    }
+    
+    try {
+      // Use the authenticate function from dependencies
+      const authResult = await authenticate(email, password);
+      
+      // Si la autenticación es exitosa, authResult será un objeto con los datos del usuario
+      console.log('[ZOHO] Authentication successful:', authResult);
+      return Result.ok({
+        isAuthenticated: true,
+        userId: authResult.userId,
+        userDetails: authResult.userDetails
+      });
+    } catch (error) {
+      // Extraer detalles del error de forma funcional
+      const errorDetails = (() => {
+        try {
+          // El error puede contener un objeto JSON serializado
+          const parsedError = JSON.parse(error.message);
+          console.log('[ZOHO] Authentication failed with details:', parsedError);
+          return parsedError;
+        } catch (parseError) {
+          // Si no se puede parsear, usar el mensaje de error tal cual
+          console.log('[ZOHO] Authentication failed:', error.message);
+          return { message: error.message };
+        }
+      })();
+      
+      return Result.ok({
+        isAuthenticated: false,
+        reason: errorDetails.message || 'Invalid credentials'
+      });
+    }
+  } catch (error) {
+    console.error('[ZOHO] Unexpected error during authentication:', error);
+    return Result.error(error);
   }
-  
-  // Authentication failed
-  const error = authResult.unwrapError();
-  return {
-    isAuthenticated: false,
-    reason: error.message || 'Invalid credentials'
-  };
 };
 
 /**
@@ -227,18 +266,18 @@ const verifyCredentials = async (email, password, authenticate) => {
  * @param {NotificationDeps} deps - Dependencies for notification operations
  */
 const handleLoginSucceeded = async (event, deps) => {
-  // Generate secure JWT tokens
-  const accessToken = generateAccessToken(event.userId);
-  const refreshToken = generateRefreshToken(event.userId);
-  
-  // Create a new event with tokens (immutable pattern)
-  const enrichedEvent = deepFreeze({
-    ...event,
-    accessToken,
-    refreshToken
-  });
-  
-  try {
+  return tryCatchAsync(async () => {
+    // Generate secure JWT tokens
+    const accessToken = generateAccessToken(event.userId);
+    const refreshToken = generateRefreshToken(event.userId);
+    
+    // Create a new event with tokens (immutable pattern)
+    const enrichedEvent = deepFreeze({
+      ...event,
+      accessToken,
+      refreshToken
+    });
+    
     // Store refresh token for later validation
     // This is a side effect, but isolated in this function
     const tokenEvent = deepFreeze({
@@ -248,13 +287,21 @@ const handleLoginSucceeded = async (event, deps) => {
       timestamp: event.timestamp
     });
     
-    await deps.storeEvent(tokenEvent);
-  } catch (error) {
-    console.error('Failed to store refresh token:', error);
-    // Continue even if token storage fails
-  }
-  
-  return enrichedEvent;
+    // Store token event and handle potential errors functionally
+    const storeResult = await deps.storeEvent(tokenEvent);
+    
+    if (storeResult.isError) {
+      console.error('Failed to store refresh token:', storeResult.unwrapError());
+      // Continue even if token storage fails
+    }
+    
+    return Result.ok(enrichedEvent);
+  })().then(result => 
+    // Ensure we always return the enriched event even if token storage fails
+    result.isError 
+      ? Result.ok(event) 
+      : result
+  );
 };
 
 /**

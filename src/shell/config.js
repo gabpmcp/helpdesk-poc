@@ -31,15 +31,15 @@ export const zohoClient = {
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        return Result.error({
+        throw new Error(JSON.stringify({
           status: response.status,
           message: errorData.message || `HTTP error ${response.status}`,
           details: errorData
-        });
+        }));
       }
       
       const data = await response.json();
-      return Result.ok(deepFreeze(data));
+      return deepFreeze(data);
     })();
   },
 
@@ -57,15 +57,15 @@ export const zohoClient = {
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        return Result.error({
+        throw new Error(JSON.stringify({
           status: response.status,
           message: errorData.message || `HTTP error ${response.status}`,
           details: errorData
-        });
+        }));
       }
       
       const data = await response.json();
-      return Result.ok(deepFreeze(data));
+      return deepFreeze(data);
     })();
   },
 
@@ -83,15 +83,15 @@ export const zohoClient = {
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        return Result.error({
+        throw new Error(JSON.stringify({
           status: response.status,
           message: errorData.message || `HTTP error ${response.status}`,
           details: errorData
-        });
+        }));
       }
       
       const data = await response.json();
-      return Result.ok(deepFreeze(data));
+      return deepFreeze(data);
     })();
   },
   
@@ -109,27 +109,27 @@ export const zohoClient = {
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        return Result.error({
+        throw new Error(JSON.stringify({
           status: response.status,
           message: errorData.message || 'Authentication failed',
           details: errorData
-        });
+        }));
       }
       
       const data = await response.json();
       
       if (!data.status || data.status !== 'success') {
-        return Result.error({
+        throw new Error(JSON.stringify({
           status: 401,
           message: data.message || 'Invalid credentials',
           details: data
-        });
+        }));
       }
       
-      return Result.ok(deepFreeze({
+      return deepFreeze({
         userId: data.data?.userId,
         userDetails: data.data
-      }));
+      });
     })();
   }
 }
