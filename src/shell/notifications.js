@@ -4,7 +4,15 @@
  */
 import { v4 as generateUUID } from 'uuid';
 import jwt from 'jsonwebtoken';
-import { Result, tryCatchAsync, deepFreeze, pipe, pipeAsync } from '../utils/functional.js';
+import { 
+  Result, 
+  tryCatch, 
+  tryCatchAsync, 
+  deepFreeze, 
+  pipe, 
+  pipeAsync,
+  extractErrorInfo
+} from '../utils/functional.js';
 
 // JWT configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -33,7 +41,11 @@ const REFRESH_TOKEN_EXPIRY = '7d'; // 7 days
 
 /**
  * @typedef {Object} NotificationDeps
- * @property {AuthenticateFn} authenticate - Function to authenticate users
+ * @property {Object} supabaseAuth - Supabase authentication functions
+ * @property {Function} supabaseAuth.signIn - Function to authenticate users with Supabase
+ * @property {Function} supabaseAuth.signUp - Function to register users with Supabase
+ * @property {Object} n8nClient - n8n client for external workflow operations
+ * @property {Function} n8nClient.verifyZohoContact - Function to verify if a contact exists in Zoho CRM
  * @property {Function} storeEvent - Function to store events
  * @property {TicketOperationFn} createTicket - Function to create tickets
  * @property {TicketOperationFn} updateTicket - Function to update tickets
@@ -54,25 +66,25 @@ export const notifyExternal = async (event, deps) => {
     // Process the event based on its type
     switch (event.type) {
       case 'LOGIN_REQUESTED':
-        return handleLoginRequested(event, deps);
+        return await handleLoginRequested(event, deps);
         
       case 'LOGIN_SUCCEEDED':
-        return handleLoginSucceeded(event, deps);
+        return await handleLoginSucceeded(event, deps);
         
       case 'REFRESH_TOKEN_VALIDATED':
-        return handleRefreshTokenValidated(event, deps);
+        return await handleRefreshTokenValidated(event, deps);
         
       case 'TICKET_CREATED':
-        return handleTicketCreated(event, deps);
+        return await handleTicketCreated(event, deps);
         
       case 'TICKET_UPDATED':
-        return handleTicketUpdated(event, deps);
+        return await handleTicketUpdated(event, deps);
         
       case 'COMMENT_ADDED':
-        return handleCommentAdded(event, deps);
+        return await handleCommentAdded(event, deps);
         
       case 'TICKET_ESCALATED':
-        return handleTicketEscalated(event, deps);
+        return await handleTicketEscalated(event, deps);
         
       default:
         // For events that don't require external notification, return as is
@@ -82,52 +94,445 @@ export const notifyExternal = async (event, deps) => {
 };
 
 /**
- * Handles login request events
- * Validates credentials and generates appropriate response event
- * @param {Object} event - Login request event
- * @param {NotificationDeps} deps - Dependencies for notification operations
- * @returns {Promise<Result>} - Result containing the login event
+ * Verifies if a contact exists in Zoho CRM via n8n
+ * @param {Object} n8nClient - n8n client for external workflow operations
+ * @returns {Function} - Function that takes an email and returns a Result
  */
-const handleLoginRequested = async (event, deps) => {
+export const verifyZohoContact = (n8nClient) => async (email) => {
+  console.log('[N8N] Verifying contact in Zoho CRM:', email);
+  
+  if (!n8nClient || typeof n8nClient.verifyZohoContact !== 'function') {
+    console.error('[N8N] n8n client not available');
+    return Result.error(new Error(JSON.stringify({
+      status: 503,
+      message: 'Zoho CRM verification service not available',
+      details: { errorCode: 'N8N_NOT_CONFIGURED', message: 'Zoho CRM verification service not available' }
+    })));
+  }
+  
   try {
-    // Paso 1: Verificar credenciales
-    console.log('Verifying credentials for:', event.email);
+    // Call the n8n client to verify the contact
+    const result = await n8nClient.verifyZohoContact(email);
     
-    // Manejar el caso donde no hay función de autenticación disponible
-    if (!deps.authenticate) {
-      console.warn('No authenticate function provided, authentication will fail');
-      const authResult = {
-        isAuthenticated: false,
-        reason: 'Authentication service not available'
-      };
-      
-      // Crear y almacenar evento LOGIN_FAILED
-      return await handleFailedLogin(event, authResult, deps);
+    if (result.isError) {
+      return result;
     }
     
-    // Verificar credenciales (ahora devuelve un Result directamente)
-    const authResultContainer = await verifyCredentials(event.email, event.password, deps.authenticate);
+    const contactData = result.unwrap();
+    console.log('[N8N] Contact verified successfully via n8n:', contactData);
     
-    // Manejar errores en la verificación de credenciales
-    if (authResultContainer.isError) {
-      console.error('Error during credential verification:', authResultContainer.unwrapError());
-      return Result.error(new Error('Authentication failed due to system error'));
+    // Asegurar que la respuesta tenga la estructura esperada
+    if (!contactData || !contactData.contact) {
+      console.error('[N8N] Invalid contact data returned from n8n');
+      return Result.error(new Error(JSON.stringify({
+        status: 400,
+        message: 'Invalid contact data returned from Zoho CRM',
+        details: { errorCode: 'INVALID_CONTACT_DATA', message: 'Invalid contact data structure' }
+      })));
     }
     
-    // Extraer el resultado de autenticación
-    const authResult = authResultContainer.unwrap();
-    console.log('Authentication result:', authResult);
-    
-    // Manejar el resultado de autenticación
-    if (!authResult.isAuthenticated) {
-      return await handleFailedLogin(event, authResult, deps);
-    } else {
-      return await handleSuccessfulLogin(event, authResult, deps);
-    }
+    // Devolver un objeto inmutable con la estructura esperada
+    return Result.ok(deepFreeze({
+      contact: contactData.contact,
+      payload: contactData.payload || {}
+    }));
   } catch (error) {
-    console.error('Unexpected error in handleLoginRequested:', error);
+    console.error('[N8N] Exception verifying contact via n8n:', error);
     return Result.error(error);
   }
+};
+
+/**
+ * Checks if a user exists in Supabase
+ * @param {Object} supabaseClient - Supabase client
+ * @returns {Function} - Function that takes an email and returns a Result
+ */
+export const checkSupabaseUser = (supabaseClient) => async (email) => {
+  console.log('[SUPABASE] Checking user exists:', email);
+  
+  if (!supabaseClient) {
+    console.error('[SUPABASE] Supabase client not available');
+    return Result.error(new Error(JSON.stringify({
+      status: 503,
+      message: 'Supabase authentication not available',
+      details: { errorCode: 'SUPABASE_NOT_CONFIGURED', message: 'Supabase authentication not available' }
+    })));
+  }
+  
+  try {
+    // Consultar directamente a la API de Supabase para verificar si el usuario existe
+    // Esto requiere permisos de servicio (SUPABASE_SERVICE_KEY)
+    const { data, error } = await supabaseClient
+      .from('users')
+      .select('email')
+      .eq('email', email)
+      .maybeSingle();
+    
+    if (error) {
+      console.error('[SUPABASE] Error checking user:', error);
+      return Result.error(new Error(JSON.stringify({
+        status: error.status || 500,
+        message: error.message || 'Error checking user',
+        details: { errorCode: error.code, message: error.message }
+      })));
+    }
+    
+    if (!data) {
+      console.log('[SUPABASE] User not found:', email);
+      return Result.ok(null);
+    }
+    
+    console.log('[SUPABASE] User found:', email);
+    return Result.ok({
+      email,
+      exists: true
+    });
+  } catch (error) {
+    console.error('[SUPABASE] Exception checking user:', error);
+    return Result.error(error);
+  }
+};
+
+/**
+ * Logs in a user with Supabase Auth
+ * @param {Object} supabaseAuth - Supabase auth functions
+ * @returns {Function} - Function that takes email and password and returns a Result
+ */
+export const loginWithSupabaseUser = (supabaseAuth) => async (email, password) => {
+  console.log('[SUPABASE] Attempting to log in user:', email);
+  
+  if (!supabaseAuth || typeof supabaseAuth.signIn !== 'function') {
+    console.error('[SUPABASE] Supabase authentication not available');
+    return Result.error(new Error(JSON.stringify({
+      status: 503,
+      message: 'Supabase authentication not available',
+      details: { errorCode: 'SUPABASE_NOT_CONFIGURED', message: 'Supabase authentication not available' }
+    })));
+  }
+  
+  try {
+    // Autenticar usuario con Supabase
+    const { data, error } = await supabaseAuth.signIn({ email, password });
+    
+    console.log('[SUPABASE] Login response:', { data: data ? 'present' : 'null', error });
+    
+    if (error) {
+      console.error('[SUPABASE] Login error:', error);
+      return Result.error(new Error(JSON.stringify({
+        status: error.status || 401,
+        message: error.message || 'Authentication failed',
+        details: { errorCode: error.code, message: error.message }
+      })));
+    }
+    
+    if (!data || !data.user) {
+      console.error('[SUPABASE] No user data returned from login');
+      return Result.error(new Error(JSON.stringify({
+        status: 401,
+        message: 'Authentication failed - no user data',
+        details: { errorCode: 'NO_USER_DATA', message: 'No user data returned from authentication' }
+      })));
+    }
+    
+    console.log('[SUPABASE] Login successful:', data.user.email);
+    
+    return Result.ok(deepFreeze({
+      userId: data.user.id,
+      email: data.user.email,
+      userDetails: data.user,
+      session: data.session
+    }));
+  } catch (error) {
+    console.error('[SUPABASE] Exception during login:', error);
+    return Result.error(error);
+  }
+};
+
+/**
+ * Registers a new user in Supabase
+ * @param {Object} supabaseAuth - Supabase authentication functions
+ * @returns {Function} - Function that takes an email and password and returns a Result
+ */
+export const registerSupabaseUser = (supabaseAuth) => async (email, password) => {
+  console.log('[SUPABASE] Attempting to register user:', email);
+  
+  if (!supabaseAuth || typeof supabaseAuth.signUp !== 'function') {
+    console.error('[SUPABASE] Supabase authentication not available');
+    return Result.error(new Error(JSON.stringify({
+      status: 503,
+      message: 'Supabase authentication not available',
+      details: { errorCode: 'SUPABASE_NOT_CONFIGURED', message: 'Supabase authentication not available' }
+    })));
+  }
+  
+  try {
+    // Registrar usuario con Supabase
+    const { data, error } = await supabaseAuth.signUp({ email, password });
+    
+    console.log('[SUPABASE] Registration response:', { data, error });
+    
+    if (error) {
+      console.error('[SUPABASE] Registration error:', error);
+      return Result.error(new Error(JSON.stringify({
+        status: error.status || 400,
+        message: error.message || 'Registration failed',
+        details: { errorCode: error.code, message: error.message }
+      })));
+    }
+    
+    if (!data || !data.user) {
+      console.error('[SUPABASE] No user data returned from registration');
+      return Result.error(new Error(JSON.stringify({
+        status: 400,
+        message: 'Registration failed - no user data',
+        details: { errorCode: 'NO_USER_DATA', message: 'No user data returned from registration' }
+      })));
+    }
+    
+    console.log('[SUPABASE] Registration successful:', data.user.email);
+    
+    return Result.ok({
+      userId: data.user.id,
+      email: data.user.email,
+      userDetails: data.user,
+      session: data.session
+    });
+  } catch (error) {
+    console.error('[SUPABASE] Exception during registration:', error);
+    return Result.error(error);
+  }
+};
+
+/**
+ * Handles login request events
+ * @param {Object} event - Login request event
+ * @param {NotificationDeps} deps - Dependencies for notification operations
+ * @returns {Promise<r>} - Result containing the login event
+ */
+const handleLoginRequested = async (event, deps) => {
+  // Envolver toda la función en un patrón IIFE con manejo de errores
+  return (async () => {
+    console.log('[LOGIN] Processing login request for:', event.email);
+    
+    // Validate dependencies
+    if (!deps || !deps.n8nClient || !deps.supabaseAuth) {
+      console.warn('[LOGIN] Required services not available');
+      const authResult = {
+        isAuthenticated: false,
+        reason: 'Authentication services not available',
+        errorCode: 'SERVICE_UNAVAILABLE'
+      };
+      return await handleFailedLogin(event, authResult, deps);
+    }
+    
+    // Step 1: Verify if contact exists in Zoho CRM
+    console.log('[LOGIN] Verifying Zoho contact');
+    const verifyContact = verifyZohoContact(deps.n8nClient);
+    const contactResult = await verifyContact(event.email);
+    
+    if (contactResult.isError) {
+      console.error('[LOGIN] Zoho contact verification failed:', contactResult.unwrapError());
+      
+      try {
+        const error = JSON.parse(contactResult.unwrapError().message);
+        const authResult = {
+          isAuthenticated: false,
+          reason: error.message || 'Contact verification failed',
+          errorCode: error.details?.errorCode || 'CONTACT_VERIFICATION_FAILED',
+          errorDetails: error.details
+        };
+        return await handleFailedLogin(event, authResult, deps);
+      } catch (parseError) {
+        const authResult = {
+          isAuthenticated: false,
+          reason: 'Contact verification failed',
+          errorCode: 'CONTACT_VERIFICATION_FAILED',
+          errorDetails: extractErrorInfo(contactResult.unwrapError())
+        };
+        return await handleFailedLogin(event, authResult, deps);
+      }
+    }
+    
+    const contactData = contactResult.unwrap();
+    console.log('[LOGIN] Zoho contact verified:', contactData);
+    
+    // Step 2: Check if user exists in Supabase
+    console.log('[LOGIN] Checking Supabase user');
+    const checkUser = checkSupabaseUser(deps.supabaseClient);
+    const userResult = await checkUser(event.email);
+    
+    if (userResult.isError) {
+      console.error('[LOGIN] Supabase user check failed:', userResult.unwrapError());
+      const authResult = {
+        isAuthenticated: false,
+        reason: 'User verification failed',
+        errorCode: 'USER_VERIFICATION_FAILED',
+        errorDetails: extractErrorInfo(userResult.unwrapError())
+      };
+      return await handleFailedLogin(event, authResult, deps);
+    }
+    
+    const userData = userResult.unwrap();
+    
+    // Step 3: Handle authentication based on user existence
+    if (userData && userData.exists) {
+      // User exists, attempt login
+      console.log('[LOGIN] User exists in Supabase, attempting login');
+      const loginUser = loginWithSupabaseUser(deps.supabaseAuth);
+      const loginResult = await loginUser(event.email, event.password);
+      
+      if (loginResult.isError) {
+        console.error('[LOGIN] Supabase login failed:', loginResult.unwrapError());
+        
+        try {
+          const error = JSON.parse(loginResult.unwrapError().message);
+          const authResult = {
+            isAuthenticated: false,
+            reason: error.message || 'Login failed',
+            errorCode: error.details?.errorCode || 'LOGIN_FAILED',
+            errorDetails: error.details
+          };
+          return await handleFailedLogin(event, authResult, deps);
+        } catch (parseError) {
+          const authResult = {
+            isAuthenticated: false,
+            reason: 'Login failed',
+            errorCode: 'LOGIN_FAILED',
+            errorDetails: extractErrorInfo(loginResult.unwrapError())
+          };
+          return await handleFailedLogin(event, authResult, deps);
+        }
+      }
+      
+      const loginData = loginResult.unwrap();
+      console.log('[LOGIN] Supabase login successful');
+      
+      // Get companies from Zoho if available
+      let companies = [];
+      try {
+        // Usar el contactId del contacto verificado para obtener empresas
+        const zohoContactId = contactData.contact?.id;
+        if (zohoContactId) {
+          const companiesResult = await deps.n8nClient.getUserCompanies(zohoContactId);
+          if (!companiesResult.isError) {
+            companies = companiesResult.unwrap().companies;
+          }
+        }
+      } catch (error) {
+        console.warn('[LOGIN] Error fetching companies, continuing with empty list:', error);
+      }
+      
+      // Create successful login result
+      const authResult = {
+        isAuthenticated: true,
+        userId: loginData.userId,
+        email: loginData.email,
+        userDetails: {
+          ...loginData.userDetails,
+          zohoContactId: contactData.contact?.id,
+          zohoContactDetails: contactData.contact
+        },
+        companies,
+        session: loginData.session
+      };
+      
+      return await handleSuccessfulLogin(event, authResult, deps);
+    } else {
+      // User doesn't exist, register new user
+      console.log('[LOGIN] User not found in Supabase, registering new user');
+      const registerUser = registerSupabaseUser(deps.supabaseAuth);
+      const registerResult = await registerUser(event.email, event.password);
+      
+      if (registerResult.isError) {
+        console.error('[LOGIN] Supabase registration failed:', registerResult.unwrapError());
+        
+        try {
+          const error = JSON.parse(registerResult.unwrapError().message);
+          const authResult = {
+            isAuthenticated: false,
+            reason: error.message || 'Registration failed',
+            errorCode: error.details?.errorCode || 'REGISTRATION_FAILED',
+            errorDetails: error.details
+          };
+          return await handleFailedLogin(event, authResult, deps);
+        } catch (parseError) {
+          const authResult = {
+            isAuthenticated: false,
+            reason: 'Registration failed',
+            errorCode: 'REGISTRATION_FAILED',
+            errorDetails: extractErrorInfo(registerResult.unwrapError())
+          };
+          return await handleFailedLogin(event, authResult, deps);
+        }
+      }
+      
+      const registerData = registerResult.unwrap();
+      console.log('[LOGIN] Supabase registration successful');
+      
+      // Get companies from Zoho if available
+      let companies = [];
+      try {
+        // Usar el contactId del contacto verificado para obtener empresas
+        const zohoContactId = contactData.contact?.id;
+        if (zohoContactId) {
+          const companiesResult = await deps.n8nClient.getUserCompanies(zohoContactId);
+          if (!companiesResult.isError) {
+            companies = companiesResult.unwrap().companies;
+          }
+        }
+      } catch (error) {
+        console.warn('[LOGIN] Error fetching companies, continuing with empty list:', error);
+      }
+      
+      // Create user registered event
+      const userRegisteredEvent = deepFreeze({
+        type: 'USER_REGISTERED',
+        userId: registerData.userId,
+        email: registerData.email,
+        zohoContactId: contactData.contact?.id,
+        zohoContactDetails: contactData.contact,
+        companies,
+        timestamp: event.timestamp
+      });
+      
+      // Store the user registered event
+      const storeResult = await deps.storeEvent(userRegisteredEvent);
+      
+      if (storeResult.isError) {
+        console.error('[LOGIN] Failed to store USER_REGISTERED event:', storeResult.unwrapError());
+      } else {
+        console.log('[LOGIN] USER_REGISTERED event stored successfully');
+      }
+      
+      // Create successful login result
+      const authResult = {
+        isAuthenticated: true,
+        userId: registerData.userId,
+        email: registerData.email,
+        userDetails: {
+          ...registerData.userDetails,
+          zohoContactId: contactData.contact?.id,
+          zohoContactDetails: contactData.contact
+        },
+        companies,
+        session: registerData.session,
+        isNewUser: true
+      };
+      
+      return await handleSuccessfulLogin(event, authResult, deps);
+    }
+  })().catch(error => {
+    // Capturar cualquier error no manejado
+    console.error('[LOGIN] Unhandled exception in handleLoginRequested:', error);
+    const errorInfo = extractErrorInfo(error);
+    const authResult = {
+      isAuthenticated: false,
+      reason: 'Internal server error',
+      errorCode: 'INTERNAL_ERROR',
+      errorDetails: errorInfo
+    };
+    return handleFailedLogin(event, authResult, deps);
+  });
 };
 
 /**
@@ -135,34 +540,49 @@ const handleLoginRequested = async (event, deps) => {
  * @param {Object} event - Original login request event
  * @param {Object} authResult - Authentication result
  * @param {NotificationDeps} deps - Dependencies for notification operations
- * @returns {Promise<Result>} - Result containing the LOGIN_FAILED event
+ * @returns {Promise<r>} - Result containing the LOGIN_FAILED event
  */
 const handleFailedLogin = async (event, authResult, deps) => {
-  // Crear evento LOGIN_FAILED (patrón inmutable)
-  const loginFailedEvent = deepFreeze({
-    type: 'LOGIN_FAILED',
-    userId: event.userId,
-    email: event.email,
-    reason: authResult.reason || 'Invalid credentials',
-    timestamp: event.timestamp
-  });
-  
-  console.log('Login failed, storing event');
-  
-  try {
-    // Almacenar el evento de fallo de inicio de sesión
+  // Usar tryCatchAsync para manejar errores funcionalmente
+  return tryCatchAsync(async () => {
+    console.log('[LOGIN] Login failed for user:', event.email);
+    console.log('[LOGIN] Failure reason:', authResult.reason);
+    
+    // Crear evento LOGIN_FAILED (patrón inmutable)
+    const loginFailedEvent = deepFreeze({
+      type: 'LOGIN_FAILED',
+      userId: event.userId,
+      email: event.email,
+      reason: authResult.reason,
+      errorCode: authResult.errorCode,
+      errorDetails: authResult.errorDetails,
+      stackTrace: authResult.stackTrace,
+      timestamp: event.timestamp
+    });
+    
+    console.log('[LOGIN] Created LOGIN_FAILED event');
+    
+    // Almacenar el evento de inicio de sesión fallido
     const storeResult = await deps.storeEvent(loginFailedEvent);
     
     if (storeResult.isError) {
-      console.error('Failed to store LOGIN_FAILED event:', storeResult.unwrapError());
+      console.error('[LOGIN] Failed to store LOGIN_FAILED event:', storeResult.unwrapError());
       return Result.error(new Error(`Failed to store LOGIN_FAILED event: ${storeResult.unwrapError().message}`));
     }
     
     return Result.ok(loginFailedEvent);
-  } catch (error) {
-    console.error('Exception storing LOGIN_FAILED event:', error);
-    return Result.error(new Error(`Exception storing LOGIN_FAILED event: ${error.message}`));
-  }
+  })().catch(error => {
+    console.error('[LOGIN] Exception in handleFailedLogin:', error);
+    // En caso de error, devolver un evento de error genérico
+    return Result.ok(deepFreeze({
+      type: 'LOGIN_FAILED',
+      userId: event.userId,
+      email: event.email,
+      reason: 'Internal server error',
+      errorCode: 'INTERNAL_ERROR',
+      timestamp: event.timestamp
+    }));
+  });
 };
 
 /**
@@ -170,7 +590,7 @@ const handleFailedLogin = async (event, authResult, deps) => {
  * @param {Object} event - Original login request event
  * @param {Object} authResult - Authentication result
  * @param {NotificationDeps} deps - Dependencies for notification operations
- * @returns {Promise<Result>} - Result containing the LOGIN_SUCCEEDED event with tokens
+ * @returns {Promise<r>} - Result containing the LOGIN_SUCCEEDED event with tokens
  */
 const handleSuccessfulLogin = async (event, authResult, deps) => {
   // Crear evento LOGIN_SUCCEEDED (patrón inmutable)
@@ -179,6 +599,8 @@ const handleSuccessfulLogin = async (event, authResult, deps) => {
     userId: event.userId,
     email: event.email,
     zohoUserId: authResult.userId,
+    userDetails: authResult.userDetails,
+    companies: authResult.companies || [],
     timestamp: event.timestamp
   });
   
@@ -207,55 +629,293 @@ const handleSuccessfulLogin = async (event, authResult, deps) => {
  * Returns a Result with authentication result with user ID if successful
  * @param {string} email - User email
  * @param {string} password - User password
- * @param {AuthenticateFn} authenticate - Function to authenticate users
- * @returns {Promise<Result>} - Result containing authentication result
+ * @param {NotificationDeps} deps - Dependencies for notification operations
+ * @returns {Promise<r>} - Result containing authentication result
  */
-const verifyCredentials = async (email, password, authenticate) => {
-  try {
-    console.log('[ZOHO] Authenticating user:', email);
+const verifyCredentials = async (email, password, deps) => {
+  console.log('[AUTH] Authenticating user:', email);
+  
+  // Verificar si estamos en modo de simulación forzada
+  const isForcedMockMode = process.env.FORCE_MOCK_AUTH === 'true';
+  const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
+  const isMockAuth = process.env.MOCK_AUTH === 'true';
+  
+  // Credenciales válidas para modo de simulación
+  const validMockCredentials = [
+    { email: 'admin@example.com', password: 'admin123' },
+    { email: 'user@example.com', password: 'user123' },
+    { email: 'itadmin@advancio.com', password: 'password123' }
+  ];
+  
+  // Si estamos en modo de simulación forzada, verificar credenciales contra la lista de credenciales válidas
+  if (isForcedMockMode || (!deps.supabaseAuth && (isDevelopment || isMockAuth))) {
+    console.log('[AUTH] Using mock authentication mode');
     
-    if (!authenticate || typeof authenticate !== 'function') {
-      console.error('Authentication function not available');
+    // Verificar si las credenciales son válidas
+    const isValidCredential = validMockCredentials.some(
+      cred => cred.email === email && cred.password === password
+    );
+    
+    if (!isValidCredential) {
+      console.error('[AUTH] Invalid mock credentials');
+      throw new Error(JSON.stringify({
+        status: 401,
+        message: 'Invalid login credentials',
+        details: { 
+          errorCode: 'invalid_credentials', 
+          message: 'Invalid login credentials'
+        }
+      }));
+    }
+    
+    console.log('[AUTH] Mock authentication successful');
+    return Result.ok({
+      isAuthenticated: true,
+      userId: email,
+      email: email,
+      userDetails: {
+        id: email,
+        email: email,
+        name: email.split('@')[0],
+        role: email.includes('admin') ? 'admin' : 'user'
+      },
+      companies: [
+        { id: 'mock-company-1', name: 'Mock Company 1' },
+        { id: 'mock-company-2', name: 'Mock Company 2' }
+      ],
+      session: { token: 'mock-session-token' }
+    });
+  }
+  
+  // 1. Verificar disponibilidad del servicio de autenticación
+  const checkAuthService = () => {
+    if (!deps || !deps.supabaseAuth || typeof deps.supabaseAuth.signIn !== 'function') {
+      console.error('[AUTH] Supabase authentication service not available');
       return Result.ok({
         isAuthenticated: false,
-        reason: 'Authentication service not available'
+        reason: 'Authentication service not available',
+        errorCode: 'SERVICE_UNAVAILABLE'
       });
+    }
+    return null; // Continuar con el pipeline
+  };
+  
+  // 2. Preparar los datos de autenticación
+  const prepareAuthData = () => {
+    console.log('[AUTH] Preparing authentication data');
+    return { email, password };
+  };
+  
+  // 3. Autenticar con Supabase
+  const authenticateWithSupabase = async (authData) => {
+    if (!authData) return null; // Si hay un error previo, pasar al siguiente paso
+    
+    try {
+      console.log('[SUPABASE] Authenticating user with Supabase:', authData.email);
+      const result = await deps.supabaseAuth.signIn(authData.email, authData.password);
+      
+      // Si result es un Result con error, lanzar el error para que sea manejado
+      if (result.isError) {
+        console.error('[SUPABASE] Authentication error in Result:', result.unwrapError());
+        throw result.unwrapError();
+      }
+      
+      console.log('[SUPABASE] Authentication result:', result);
+      
+      // Verificar que el resultado tenga los datos necesarios
+      if (!result.unwrap || !result.unwrap().userId) {
+        console.error('[SUPABASE] Invalid authentication result format');
+        throw new Error(JSON.stringify({
+          status: 401,
+          message: 'Authentication failed - invalid result format',
+          details: { 
+            errorCode: 'INVALID_RESULT_FORMAT', 
+            message: 'Authentication service returned an invalid result format'
+          }
+        }));
+      }
+      
+      return result.unwrap();
+    } catch (error) {
+      console.error('[SUPABASE] Authentication error:', error);
+      // Propagar el error para que sea manejado por handleAuthError
+      throw error;
+    }
+  };
+  
+  // 4. Verificar si el usuario existe en Zoho CRM
+  const verifyUserInZoho = async (supabaseResult) => {
+    if (!supabaseResult) {
+      console.log('[ZOHO] Skipping Zoho verification - authentication failed in previous step');
+      return null; // Si hay un error previo, pasar al siguiente paso
+    }
+    
+    // Verificar que tengamos el email necesario para la verificación en Zoho
+    if (!supabaseResult.email) {
+      console.error('[ZOHO] Cannot verify user in Zoho - missing email');
+      throw new Error(JSON.stringify({
+        status: 400,
+        message: 'Cannot verify user in Zoho - missing email',
+        details: { 
+          errorCode: 'MISSING_EMAIL', 
+          message: 'Email is required for Zoho verification'
+        }
+      }));
     }
     
     try {
-      // Use the authenticate function from dependencies
-      const authResult = await authenticate(email, password);
-      
-      // Si la autenticación es exitosa, authResult será un objeto con los datos del usuario
-      console.log('[ZOHO] Authentication successful:', authResult);
-      return Result.ok({
-        isAuthenticated: true,
-        userId: authResult.userId,
-        userDetails: authResult.userDetails
-      });
+      console.log('[N8N] Verifying user exists in Zoho CRM for email:', supabaseResult.email);
+      return {
+        ...supabaseResult,
+        zohoData: await deps.n8nClient.verifyZohoContact(supabaseResult.email)
+      };
     } catch (error) {
-      // Extraer detalles del error de forma funcional
-      const errorDetails = (() => {
-        try {
-          // El error puede contener un objeto JSON serializado
-          const parsedError = JSON.parse(error.message);
-          console.log('[ZOHO] Authentication failed with details:', parsedError);
-          return parsedError;
-        } catch (parseError) {
-          // Si no se puede parsear, usar el mensaje de error tal cual
-          console.log('[ZOHO] Authentication failed:', error.message);
-          return { message: error.message };
+      console.error('[N8N] User verification error:', error);
+      // Si el usuario no existe en Zoho, lanzar error de negocio
+      throw new Error(JSON.stringify({
+        status: 403,
+        message: 'User not registered in CRM system',
+        details: { 
+          errorCode: 'USER_NOT_IN_CRM', 
+          message: 'User authenticated but not registered in CRM system'
         }
-      })();
+      }));
+    }
+  };
+  
+  // 5. Obtener compañías asociadas al usuario
+  const getUserCompanies = async (userData) => {
+    if (!userData) {
+      console.log('[N8N] Skipping company retrieval - authentication failed in previous step');
+      return null; // Si hay un error previo, pasar al siguiente paso
+    }
+    
+    // Verificar que tengamos los datos de Zoho necesarios
+    if (!userData.zohoData || !userData.zohoData.userId) {
+      console.warn('[N8N] Cannot get companies - missing Zoho user ID');
+      // Continuar con el flujo pero sin compañías
+      return {
+        ...userData,
+        companies: []
+      };
+    }
+    
+    try {
+      console.log('[N8N] Getting companies for user:', userData.zohoData.userId);
+      const companiesResult = await deps.n8nClient.getUserCompanies(userData.zohoData.userId);
       
+      return {
+        ...userData,
+        companies: companiesResult.companies
+      };
+    } catch (error) {
+      console.warn('[N8N] Error getting companies:', error);
+      // Si hay error al obtener compañías, continuar pero con lista vacía
+      return {
+        ...userData,
+        companies: []
+      };
+    }
+  };
+  
+  // 6. Procesar el resultado final
+  const processAuthResult = (authData) => {
+    if (!authData) {
+      console.log('[AUTH] No authentication data available, authentication failed');
       return Result.ok({
         isAuthenticated: false,
-        reason: errorDetails.message || 'Invalid credentials'
+        reason: 'Authentication failed',
+        errorCode: 'AUTH_FAILED',
+        errorDetails: { message: 'Authentication pipeline returned no data' }
       });
     }
+    
+    // Verificar que tengamos los datos necesarios para considerar la autenticación exitosa
+    if (!authData.userId || !authData.email) {
+      console.log('[AUTH] Missing required authentication data, authentication failed');
+      return Result.ok({
+        isAuthenticated: false,
+        reason: 'Authentication failed - missing required data',
+        errorCode: 'MISSING_AUTH_DATA',
+        errorDetails: { 
+          message: 'Authentication result is missing required data',
+          missingFields: !authData.userId ? 'userId' : !authData.email ? 'email' : 'unknown'
+        }
+      });
+    }
+    
+    console.log('[AUTH] Authentication successful, processing result');
+    return Result.ok({
+      isAuthenticated: true,
+      userId: authData.userId,
+      email: authData.email,
+      userDetails: {
+        ...authData.userDetails,
+        zohoDetails: authData.zohoData ? authData.zohoData.userDetails : undefined
+      },
+      companies: authData.companies || [],
+      session: authData.session
+    });
+  };
+  
+  // 7. Manejar errores de autenticación
+  const handleAuthError = (error) => {
+    console.error('[AUTH] Authentication error:', error);
+    
+    // Extraer información detallada del error
+    const errorInfo = extractErrorInfo(error);
+    console.log('[AUTH] Extracted error info:', errorInfo);
+    
+    // Determinar si el error contiene detalles JSON
+    let errorDetails = {};
+    try {
+      if (typeof error.message === 'string' && error.message.startsWith('{')) {
+        errorDetails = JSON.parse(error.message).details || {};
+      } else if (errorInfo.details) {
+        errorDetails = errorInfo.details;
+      }
+    } catch (e) {
+      console.error('[AUTH] Error parsing error details:', e);
+    }
+    
+    const errorMessage = errorDetails.message || error.message || 'Invalid credentials';
+    const errorCode = errorDetails.errorCode || 'AUTH_ERROR';
+    
+    console.log('[AUTH] Final error details:', { errorMessage, errorCode, errorDetails });
+    
+    return Result.ok({
+      isAuthenticated: false,
+      reason: errorMessage,
+      errorCode: errorCode,
+      errorDetails: errorDetails,
+      stackTrace: errorInfo.stack
+    });
+  };
+  
+  // Ejecutar el pipeline de autenticación
+  try {
+    // Verificar servicio de autenticación primero
+    const serviceCheck = checkAuthService();
+    if (serviceCheck) {
+      console.log('[AUTH] Service check failed:', serviceCheck.unwrap());
+      return serviceCheck;
+    }
+    
+    console.log('[AUTH] Starting authentication pipeline');
+    
+    // Ejecutar el pipeline con pipeAsync
+    return await tryCatchAsync(async () => {
+      return await pipeAsync(
+        prepareAuthData,
+        authenticateWithSupabase,
+        verifyUserInZoho,
+        getUserCompanies,
+        processAuthResult
+      )();
+    })().catch(handleAuthError);
   } catch (error) {
-    console.error('[ZOHO] Unexpected error during authentication:', error);
-    return Result.error(error);
+    console.error('[AUTH] Unhandled exception in verifyCredentials:', error);
+    return handleAuthError(error);
   }
 };
 

@@ -158,7 +158,7 @@ const generateEvent = (command, history, timestamp) => {
  * Pure function to store an event
  * Improved error handling for Supabase connection issues
  */
-const storeEvent$ = (event, deps) => {
+const storeEvent$ = async (event, deps) => {
   console.log('Attempting to store event in Supabase:', event);
   console.log('Using persist function:', deps.persistFn ? 'Available' : 'Not available');
   
@@ -169,22 +169,20 @@ const storeEvent$ = (event, deps) => {
     return Promise.resolve(Result.ok(event));
   }
   
-  return storeEvent(deps.persistFn)(event)
-    .then(result => {
-      if (!result.isOk) {
-        console.error('Failed to store event:', result.unwrapError());
-      } else {
-        console.log('Event stored successfully');
-      }
-      return result;
-    });
+  const result = await storeEvent(deps.persistFn)(event);
+  if (!result.isOk) {
+    console.error('Failed to store event:', result.unwrapError());
+  } else {
+    console.log('Event stored successfully');
+  }
+  return result;
 };
 
 /**
  * Pure function to handle notifications
  * Improved error handling for external service connections
  */
-const notify$ = (event, deps) => {
+const notify$ = async (event, deps) => {
   console.log('Processing notifications for event:', event);
   
   // Create notification dependencies from our primitive functions
@@ -194,7 +192,10 @@ const notify$ = (event, deps) => {
     createTicket: deps.createTicket,
     updateTicket: deps.updateTicket,
     addComment: deps.addComment,
-    escalateTicket: deps.escalateTicket
+    escalateTicket: deps.escalateTicket,
+    n8nClient: deps.n8nClient,
+    supabaseAuth: deps.supabaseAuth,
+    supabaseClient: deps.supabaseClient
   };
   
   // For testing purposes or when external services are not available,
@@ -220,15 +221,13 @@ const notify$ = (event, deps) => {
     return Promise.resolve(Result.ok(event));
   }
   
-  return notifyExternal(event, notificationDeps)
-    .then(result => {
-      if (!result.isOk) {
-        console.error('Failed to process notifications:', result.unwrapError());
-      } else {
-        console.log('Notifications processed successfully');
-      }
-      return result;
-    });
+  const result_2 = await notifyExternal(event, notificationDeps);
+  if (!result_2.isOk) {
+    console.error('Failed to process notifications:', result_2.unwrapError());
+  } else {
+    console.log('Notifications processed successfully');
+  }
+  return result_2;
 };
 
 /**
@@ -244,6 +243,14 @@ const shapeResponse = (event) => {
         userId: event.userId,
         accessToken: event.accessToken,
         refreshToken: event.refreshToken
+      };
+      
+    case 'USER_REGISTERED':
+      return {
+        success: true,
+        userId: event.userId,
+        isNewUser: true,
+        zohoContactId: event.zohoContactId
       };
       
     case 'LOGIN_FAILED':
@@ -307,9 +314,9 @@ const createExternalServiceFunctions = (deps) => {
         console.log('[MOCK AUTH] Invalid credentials');
         return Promise.resolve(Result.error(new Error('Invalid credentials')));
       };
-    } else if (deps.zohoClient) {
-      // Real authentication function using Zoho
-      return (email, password) => deps.zohoClient.authenticate(email, password);
+    } else if (deps.n8nClient) {
+      // Real authentication function using n8n
+      return (email, password) => deps.n8nClient.authenticate(email, password);
     } else {
       // No authentication function available
       return null;
@@ -317,20 +324,20 @@ const createExternalServiceFunctions = (deps) => {
   })();
   
   // Create primitive ticket operation functions
-  const createTicket = deps.zohoClient ?
-    (ticket) => deps.zohoClient.createTicket(ticket) :
+  const createTicket = deps.n8nClient ?
+    (ticket) => deps.n8nClient.createTicket(ticket) :
     null;
     
-  const updateTicket = deps.zohoClient ?
-    (ticket) => deps.zohoClient.updateTicket(ticket) :
+  const updateTicket = deps.n8nClient ?
+    (ticket) => deps.n8nClient.updateTicket(ticket) :
     null;
     
-  const addComment = deps.zohoClient ?
-    (comment) => deps.zohoClient.addComment(comment) :
+  const addComment = deps.n8nClient ?
+    (comment) => deps.n8nClient.addComment(comment) :
     null;
     
-  const escalateTicket = deps.zohoClient ?
-    (ticket) => deps.zohoClient.escalateTicket(ticket) :
+  const escalateTicket = deps.n8nClient ?
+    (ticket) => deps.n8nClient.escalateTicket(ticket) :
     null;
   
   return {
@@ -340,7 +347,10 @@ const createExternalServiceFunctions = (deps) => {
     createTicket,
     updateTicket,
     addComment,
-    escalateTicket
+    escalateTicket,
+    n8nClient: deps.n8nClient,
+    supabaseAuth: deps.supabaseAuth,
+    supabaseClient: deps.supabaseClient
   };
 };
 
@@ -358,7 +368,7 @@ export const setupApiRoutes = (deps) => {
   const serviceFunctions = createExternalServiceFunctions(deps);
   
   // --- Command endpoint (centralized) ---
-  router.post('/commands', (ctx) => {
+  router.post('/commands', async (ctx) => {
     console.log('Request received at /commands');
     const timestamp = new Date().toISOString();
     

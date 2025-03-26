@@ -319,3 +319,49 @@ export const removeWhere = (arr, predicate) =>
  */
 export const updateWhere = (arr, predicate, updater) => 
   arr.map(item => predicate(item) ? updater(item) : item);
+
+/**
+ * Extrae una porción útil del stack trace de un error
+ * @param {Error} error - El error del que extraer el stack trace
+ * @param {number} maxLines - Número máximo de líneas a extraer (por defecto 5)
+ * @returns {string} - Stack trace formateado
+ */
+export const extractStackTrace = (error, maxLines = 5) => {
+  if (!error || !error.stack) return 'No stack trace available';
+  
+  // Dividir el stack trace en líneas
+  const lines = error.stack.split('\n');
+  
+  // Eliminar la primera línea si contiene el mensaje de error (que ya tenemos)
+  const stackLines = lines[0].includes(error.message) ? lines.slice(1) : lines;
+  
+  // Tomar solo las primeras maxLines líneas
+  const relevantLines = stackLines.slice(0, maxLines);
+  
+  // Formatear y devolver
+  return relevantLines.map(line => line.trim()).join('\n');
+};
+
+/**
+ * Extrae información útil de un error para logging o debugging
+ * @param {Error} error - El error del que extraer información
+ * @returns {Object} - Objeto con información útil del error
+ */
+export const extractErrorInfo = (error) => {
+  if (!error) return { message: 'Unknown error', stack: 'No stack available' };
+  
+  return deepFreeze({
+    message: error.message || 'Unknown error',
+    name: error.name || 'Error',
+    stack: extractStackTrace(error),
+    code: error.code,
+    // Intentar extraer detalles adicionales si el mensaje es JSON
+    details: (() => {
+      try {
+        return JSON.parse(error.message);
+      } catch (e) {
+        return null;
+      }
+    })()
+  });
+};

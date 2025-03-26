@@ -42,7 +42,7 @@ export const storeEvent = (persistFn) => async (event) => {
     });
     
     // persistFn ahora devuelve un Result, así que necesitamos manejarlo adecuadamente
-    if (eventResult.isError) {
+    if (eventResult.error) {
       throw new Error(`Failed to store event: ${eventResult.unwrapError().message}`);
     }
     
@@ -60,7 +60,7 @@ export const storeEvent = (persistFn) => async (event) => {
         timestamp: eventWithTimestamp.timestamp
       })
       .then(result => {
-        if (result.isError) {
+        if (result.error) {
           console.error(`Failed to store user activity: ${result.unwrapError().message}`);
         } else {
           console.log(`Successfully stored user activity for ${event.type}`);
@@ -95,7 +95,7 @@ export const fetchEventsByUserAndFilters = (queryFn) => async (params) => {
     
     const result = await queryFn(queryParams);
       
-    if (result.isError) {
+    if (result.error) {
       throw new Error(`Failed to fetch events: ${result.unwrapError().message}`);
     }
     

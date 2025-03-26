@@ -4,8 +4,8 @@
  */
 import Koa from 'koa';
 import { setupApiRoutes } from './api/index.js';
-import { zohoClient, supabaseClient, config } from './shell/config.js';
-import { notifyExternal } from './shell/notifications.js';
+import { supabaseClient, supabaseAuth, config } from './shell/config.js';
+import n8nClient from './shell/n8nClient.js';
 
 /**
  * Initialize Koa application
@@ -17,8 +17,9 @@ const app = new Koa();
  * This is where we wire together the pure core with the imperative shell
  */
 const deps = {
-  zohoClient,
-  supabaseClient
+  n8nClient,
+  supabaseClient,
+  supabaseAuth
 };
 
 /**
