@@ -18,6 +18,8 @@ import {
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const ACCESS_TOKEN_EXPIRY = '1h';  // 1 hour
 const REFRESH_TOKEN_EXPIRY = '7d'; // 7 days
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
 /**
  * @typedef {Object} AuthResult
@@ -147,50 +149,73 @@ export const verifyZohoContact = (n8nClient) => async (email) => {
  * @param {Object} supabaseClient - Supabase client
  * @returns {Function} - Function that takes an email and returns a Result
  */
-export const checkSupabaseUser = (supabaseClient) => async (email) => {
+export const checkSupabaseUser = (supabaseClient) => (email) =>
+  Promise.resolve(email)
+    .then(logChecking)
+    .then(assertSupabaseAdminAvailable(supabaseClient))
+    .then(fetchUser(supabaseClient))
+    .then((user) => {
+      logUserFoundOrNull(user);
+      return user;
+    })
+    // .then(formatUserResult)
+    .catch(handleSupabaseError);
+
+const logChecking = (email) => {
   console.log('[SUPABASE] Checking user exists:', email);
-  
-  if (!supabaseClient) {
-    console.error('[SUPABASE] Supabase client not available');
-    return Result.error(new Error(JSON.stringify({
+  return email;
+};
+
+const assertSupabaseAdminAvailable = (client) => (email) => {
+  if (!client?.auth?.admin?.listUsers) {
+    return Promise.reject(serviceUnavailableError());
+  }
+  return Promise.resolve(email);
+};
+
+const fetchUser = (client) => (email) =>
+  client.auth.admin
+    .listUsers({ page: 1, perPage: 1, email })
+    .then(({ data: { users }, error }) =>
+      error ? Promise.reject(supabaseError(error)) : users.find((u) => u.email === email) ?? null
+    );
+
+const logUserFoundOrNull = (user) => {
+  console.log(
+    `[SUPABASE] ${user?.exists ? `User found: ${user.email}` : 'User not found'}`
+  );
+};
+
+// const formatUserResult = (user) =>
+//   user?.exists ? { email: user.email, exists: true } : null;
+
+const serviceUnavailableError = (context) =>
+  new Error(
+    JSON.stringify({
       status: 503,
-      message: 'Supabase authentication not available',
-      details: { errorCode: 'SUPABASE_NOT_CONFIGURED', message: 'Supabase authentication not available' }
-    })));
-  }
-  
-  try {
-    // Consultar directamente a la API de Supabase para verificar si el usuario existe
-    // Esto requiere permisos de servicio (SUPABASE_SERVICE_KEY)
-    const { data, error } = await supabaseClient
-      .from('users')
-      .select('email')
-      .eq('email', email)
-      .maybeSingle();
-    
-    if (error) {
-      console.error('[SUPABASE] Error checking user:', error);
-      return Result.error(new Error(JSON.stringify({
-        status: error.status || 500,
-        message: error.message || 'Error checking user',
-        details: { errorCode: error.code, message: error.message }
-      })));
-    }
-    
-    if (!data) {
-      console.log('[SUPABASE] User not found:', email);
-      return Result.ok(null);
-    }
-    
-    console.log('[SUPABASE] User found:', email);
-    return Result.ok({
-      email,
-      exists: true
-    });
-  } catch (error) {
-    console.error('[SUPABASE] Exception checking user:', error);
-    return Result.error(error);
-  }
+      message: `${context} not available`,
+      details: {
+        errorCode: `${context.toUpperCase().replace(/\s+/g, '_')}_NOT_CONFIGURED`,
+        message: `${context} not available`,
+      },
+    })
+  );
+
+const supabaseError = (error, defaultMessage = 'Supabase error', defaultStatus = 500) =>
+  new Error(
+    JSON.stringify({
+      status: error.status || defaultStatus,
+      message: error.message || defaultMessage,
+      details: {
+        errorCode: error.code || 'UNKNOWN_ERROR',
+        message: error.message || defaultMessage,
+      },
+    })
+  );
+
+const handleSupabaseError = (err) => {
+  console.error('[SUPABASE] Error checking user:', err);
+  throw err;
 };
 
 /**
@@ -198,53 +223,187 @@ export const checkSupabaseUser = (supabaseClient) => async (email) => {
  * @param {Object} supabaseAuth - Supabase auth functions
  * @returns {Function} - Function that takes email and password and returns a Result
  */
-export const loginWithSupabaseUser = (supabaseAuth) => async (email, password) => {
-  console.log('[SUPABASE] Attempting to log in user:', email);
-  
-  if (!supabaseAuth || typeof supabaseAuth.signIn !== 'function') {
-    console.error('[SUPABASE] Supabase authentication not available');
-    return Result.error(new Error(JSON.stringify({
-      status: 503,
-      message: 'Supabase authentication not available',
-      details: { errorCode: 'SUPABASE_NOT_CONFIGURED', message: 'Supabase authentication not available' }
-    })));
+export const loginUserWithSupabase = (supabaseAuth) => (email, password) =>
+  Promise.resolve({ supabaseAuth, email, password })
+    .then(assertAuthAvailable)
+    .then(attemptLogin)
+    .then(validateLoginResponse)
+    .then(buildLoginResult)
+    .catch((err) => Promise.reject(parseError(err, 'LOGIN_FAILED')));
+
+const assertAuthAvailable = ({ supabaseAuth, email, password }) =>
+  supabaseAuth?.signIn instanceof Function
+    ? { supabaseAuth, email, password }
+    : Promise.reject(
+        new Error(
+          JSON.stringify({
+            status: 503,
+            message: 'Supabase authentication not available',
+            details: {
+              errorCode: 'SUPABASE_NOT_CONFIGURED',
+              message: 'Supabase authentication not available'
+            }
+          })
+        )
+      );
+
+const attemptLogin = ({ supabaseAuth, email, password }) =>
+  supabaseAuth
+    .signIn({ email, password })
+    .then(({ data, error }) => ({ data, error, email }));
+
+const validateLoginResponse = ({ data, error, email }) =>
+  error
+    ? Promise.reject(
+        new Error(
+          JSON.stringify({
+            status: error.status || 401,
+            message: error.message || 'Authentication failed',
+            details: { errorCode: error.code, message: error.message }
+          })
+        )
+      )
+    : data?.user
+    ? { user: data.user, session: data.session }
+    : Promise.reject(
+        new Error(
+          JSON.stringify({
+            status: 401,
+            message: 'Authentication failed - no user data',
+            details: { errorCode: 'NO_USER_DATA', message: 'No user data returned from authentication' }
+          })
+        )
+      );
+
+const buildLoginResult = ({ user, session }) =>
+  deepFreeze({
+    userId: user.id,
+    email: user.email,
+    userDetails: user,
+    session
+  });
+
+const logRegisterAttempt = ({ email }) =>
+  console.log('[SUPABASE] Attempting to register user:', email);
+
+const assertSignUpAvailable = (auth) => (input) => {
+  if (!auth?.signUp || typeof auth.signUp !== 'function') {
+    return Promise.reject(serviceUnavailableError());
   }
-  
+  return input;
+};
+
+// const signUpWithSupabase = (auth) => ({ email, password }) => {
+//   const payload = { email, password };
+//   console.log('[DEBUG] Payload typeof:', typeof payload);
+//   console.log('[DEBUG] Payload JSON:', JSON.stringify(payload));
+//   console.log('[DEBUG] Payload keys:', Object.keys(payload));
+//   console.log('[DEBUG] Payload:', payload);
+//   if (typeof email !== 'string' || typeof password !== 'string') {
+//     throw new Error(`Invalid input to Supabase: email and password must be strings. Got: ${typeof email}, ${typeof password}`);
+//   }
+//   return auth.signUp(payload).then(({ data, error }) =>
+//     error ? Promise.reject(supabaseError(error)) : data
+//   );
+// };
+
+const signUpWithSupabase = ({ supabaseUrl, supabaseAnonKey }) => ({ email, password }) =>
+  Promise.resolve({ email, password })
+    .then(assertValidCredentials)
+    .then(toPayload)
+    .then(postSignUpRequest(supabaseUrl, supabaseAnonKey))
+
+const assertValidCredentials = ({ email, password }) =>
+  typeof email === 'string' && typeof password === 'string'
+    ? { email, password }
+    : Promise.reject(
+        new Error(
+          `Invalid input: email and password must be strings. Got: ${typeof email}, ${typeof password}`
+        )
+      );
+
+const toPayload = ({ email, password }) => ({
+  url: '/auth/v1/signup',
+  body: JSON.stringify({ email, password }),
+  debug: { email, password }
+});
+
+const postSignUpRequest = (supabaseUrl, supabaseAnonKey) => ({ url, body, debug }) =>
+  fetch(`${supabaseUrl}${url}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': supabaseAnonKey,
+      'Authorization': `Bearer ${supabaseAnonKey}`
+    },
+    body
+  }).then((res) => res.json()
+    .then((json) =>
+      res.ok
+        ? json
+        : Promise.reject(
+            Object.assign(
+              new Error(json.error?.message || 'Unknown Supabase signup error'),
+              {
+                code: json.error?.code || res.status,
+                status: res.status,
+                details: json
+              }
+            )
+          )
+    )
+  );
+
+const validateSignUpResponse = (data) => {
+  // console.log({ data });
+  if (!data || !data.email) {
+    return Promise.reject(
+      new Error(
+        JSON.stringify({
+          status: 400,
+          message: 'Registration failed - no user data',
+          details: {
+            errorCode: 'NO_USER_DATA',
+            message: 'No user data returned from registration',
+          },
+        })
+      )
+    );
+  }
+  return data;
+};
+
+const formatRegisterData = (data) => ({
+  userId: data.id,
+  email: data.email,
+  userDetails: data.user_metadata,
+  session: data.session,
+});
+
+const logRegisterSuccess = (data) =>
+  console.log('[SUPABASE] Registration successful:', data);
+
+const parseError = (err, defaultCode) => {
+  const parsed = safeJsonParse(err?.message);
+  return parsed
+    ? {
+        reason: parsed.message || 'Process failed',
+        errorCode: parsed.details?.errorCode || defaultCode,
+        errorDetails: parsed.details,
+      }
+    : {
+        reason: 'Unexpected error',
+        errorCode: defaultCode,
+        errorDetails: extractErrorInfo(err),
+      };
+};
+
+const safeJsonParse = (value) => {
+  if (typeof value !== 'string') return null;
   try {
-    // Autenticar usuario con Supabase
-    const { data, error } = await supabaseAuth.signIn({ email, password });
-    
-    console.log('[SUPABASE] Login response:', { data: data ? 'present' : 'null', error });
-    
-    if (error) {
-      console.error('[SUPABASE] Login error:', error);
-      return Result.error(new Error(JSON.stringify({
-        status: error.status || 401,
-        message: error.message || 'Authentication failed',
-        details: { errorCode: error.code, message: error.message }
-      })));
-    }
-    
-    if (!data || !data.user) {
-      console.error('[SUPABASE] No user data returned from login');
-      return Result.error(new Error(JSON.stringify({
-        status: 401,
-        message: 'Authentication failed - no user data',
-        details: { errorCode: 'NO_USER_DATA', message: 'No user data returned from authentication' }
-      })));
-    }
-    
-    console.log('[SUPABASE] Login successful:', data.user.email);
-    
-    return Result.ok(deepFreeze({
-      userId: data.user.id,
-      email: data.user.email,
-      userDetails: data.user,
-      session: data.session
-    }));
-  } catch (error) {
-    console.error('[SUPABASE] Exception during login:', error);
-    return Result.error(error);
+    return JSON.parse(value);
+  } catch {
+    return null;
   }
 };
 
@@ -253,55 +412,14 @@ export const loginWithSupabaseUser = (supabaseAuth) => async (email, password) =
  * @param {Object} supabaseAuth - Supabase authentication functions
  * @returns {Function} - Function that takes an email and password and returns a Result
  */
-export const registerSupabaseUser = (supabaseAuth) => async (email, password) => {
-  console.log('[SUPABASE] Attempting to register user:', email);
-  
-  if (!supabaseAuth || typeof supabaseAuth.signUp !== 'function') {
-    console.error('[SUPABASE] Supabase authentication not available');
-    return Result.error(new Error(JSON.stringify({
-      status: 503,
-      message: 'Supabase authentication not available',
-      details: { errorCode: 'SUPABASE_NOT_CONFIGURED', message: 'Supabase authentication not available' }
-    })));
-  }
-  
-  try {
-    // Registrar usuario con Supabase
-    const { data, error } = await supabaseAuth.signUp({ email, password });
-    
-    console.log('[SUPABASE] Registration response:', { data, error });
-    
-    if (error) {
-      console.error('[SUPABASE] Registration error:', error);
-      return Result.error(new Error(JSON.stringify({
-        status: error.status || 400,
-        message: error.message || 'Registration failed',
-        details: { errorCode: error.code, message: error.message }
-      })));
-    }
-    
-    if (!data || !data.user) {
-      console.error('[SUPABASE] No user data returned from registration');
-      return Result.error(new Error(JSON.stringify({
-        status: 400,
-        message: 'Registration failed - no user data',
-        details: { errorCode: 'NO_USER_DATA', message: 'No user data returned from registration' }
-      })));
-    }
-    
-    console.log('[SUPABASE] Registration successful:', data.user.email);
-    
-    return Result.ok({
-      userId: data.user.id,
-      email: data.user.email,
-      userDetails: data.user,
-      session: data.session
-    });
-  } catch (error) {
-    console.error('[SUPABASE] Exception during registration:', error);
-    return Result.error(error);
-  }
-};
+export const registerSupabaseUser = (supabaseAuth) => (email, password) =>
+  Promise.resolve({ email, password })
+    .then(tap(logRegisterAttempt))
+    .then(assertSignUpAvailable(supabaseAuth))
+    .then(signUpWithSupabase({supabaseUrl: SUPABASE_URL, supabaseAnonKey: SUPABASE_ANON_KEY}))
+    .then(validateSignUpResponse)
+    .then(tap(logRegisterSuccess))
+    .catch((err) => Promise.reject(parseError(err, 'REGISTRATION_FAILED')));
 
 /**
  * Handles login request events
@@ -309,231 +427,141 @@ export const registerSupabaseUser = (supabaseAuth) => async (email, password) =>
  * @param {NotificationDeps} deps - Dependencies for notification operations
  * @returns {Promise<r>} - Result containing the login event
  */
-const handleLoginRequested = async (event, deps) => {
-  // Envolver toda la función en un patrón IIFE con manejo de errores
-  return (async () => {
-    console.log('[LOGIN] Processing login request for:', event.email);
-    
-    // Validate dependencies
-    if (!deps || !deps.n8nClient || !deps.supabaseAuth) {
-      console.warn('[LOGIN] Required services not available');
-      const authResult = {
-        isAuthenticated: false,
+const handleLoginRequested = (event, deps) =>
+  Promise.resolve(event)
+    .then(tap(logStart))
+    .then(assertDepsAvailable(deps))
+    .then(verifyContact(deps))
+    .then(storeContactData(deps))
+    .then(checkSupabase(deps))
+    .then(authenticateOrRegister(event, deps))
+    .catch(handleUnhandled(event, deps));
+
+const logStart = ({ email }) =>
+  console.log('[LOGIN] Processing login request for:', email);
+
+const assertDepsAvailable = (deps) => (event) => {
+  const missing = !deps?.n8nClient || !deps?.supabaseAuth;
+  return missing
+    ? Promise.reject({
         reason: 'Authentication services not available',
-        errorCode: 'SERVICE_UNAVAILABLE'
-      };
-      return await handleFailedLogin(event, authResult, deps);
-    }
+        errorCode: 'SERVICE_UNAVAILABLE',
+      })
+    : event;
+};
+
+const verifyContact = (deps) => (event) =>
+  deps.n8nClient
+    .verifyZohoContact(event.email)
+    .then((result) =>
+      result.isError
+        ? Promise.reject(parseError(result.unwrapError(), 'CONTACT_VERIFICATION_FAILED'))
+        : { event, contact: result.unwrap() }
+    );
+
+const storeContactData = (deps) => ({ event, contact }) =>
+  Promise.resolve({ event, contact });
+
+const checkSupabase = (deps) => ({ event, contact }) =>
+  checkSupabaseUser(deps.supabaseClient)(event.email)
+    .then((user) => ({ event, contact, user })) // el valor `null` es manejable downstream
+    .catch((err) =>
+      Promise.reject(parseError(err, 'USER_VERIFICATION_FAILED'))
+    );
+
+const authenticateOrRegister = (event, deps) => ({ contact, user }) =>
+  user
+    ? loginFlow(event, contact, deps)
+    : registerFlow(event, contact, deps);
+
+const loginFlow = (event, contact, deps) =>
+  loginUserWithSupabase(deps.supabaseAuth)(event.email, event.password)
+    .then(attachCompanies(deps, contact))
+    .then((companiesAndUser) =>
+      buildAuthResult(event, contact, companiesAndUser, false)
+    )
+    .then((authResult) => handleSuccessfulLogin(event, authResult, deps))
+    .catch((err) =>
+      handleFailedLogin(event, parseError(err, 'LOGIN_FAILED'), deps)
+    );
+
+const registerFlow = (event, contact, deps) =>
+  registerSupabaseUser(deps.supabaseAuth)(event.email, event.password)
+  .then(withCompanies(deps, contact))
+  .then((companiesAndUser) =>
+    storeUserRegisteredEvent(event, contact, companiesAndUser, deps)
+  )
+  .then((authResult) => handleSuccessfulLogin(event, authResult, deps));
     
-    // Step 1: Verify if contact exists in Zoho CRM
-    console.log('[LOGIN] Verifying Zoho contact');
-    const verifyContact = verifyZohoContact(deps.n8nClient);
-    const contactResult = await verifyContact(event.email);
-    
-    if (contactResult.isError) {
-      console.error('[LOGIN] Zoho contact verification failed:', contactResult.unwrapError());
-      
-      try {
-        const error = JSON.parse(contactResult.unwrapError().message);
-        const authResult = {
-          isAuthenticated: false,
-          reason: error.message || 'Contact verification failed',
-          errorCode: error.details?.errorCode || 'CONTACT_VERIFICATION_FAILED',
-          errorDetails: error.details
-        };
-        return await handleFailedLogin(event, authResult, deps);
-      } catch (parseError) {
-        const authResult = {
-          isAuthenticated: false,
-          reason: 'Contact verification failed',
-          errorCode: 'CONTACT_VERIFICATION_FAILED',
-          errorDetails: extractErrorInfo(contactResult.unwrapError())
-        };
-        return await handleFailedLogin(event, authResult, deps);
-      }
-    }
-    
-    const contactData = contactResult.unwrap();
-    console.log('[LOGIN] Zoho contact verified:', contactData);
-    
-    // Step 2: Check if user exists in Supabase
-    console.log('[LOGIN] Checking Supabase user');
-    const checkUser = checkSupabaseUser(deps.supabaseClient);
-    const userResult = await checkUser(event.email);
-    
-    if (userResult.isError) {
-      console.error('[LOGIN] Supabase user check failed:', userResult.unwrapError());
-      const authResult = {
-        isAuthenticated: false,
-        reason: 'User verification failed',
-        errorCode: 'USER_VERIFICATION_FAILED',
-        errorDetails: extractErrorInfo(userResult.unwrapError())
-      };
-      return await handleFailedLogin(event, authResult, deps);
-    }
-    
-    const userData = userResult.unwrap();
-    
-    // Step 3: Handle authentication based on user existence
-    if (userData && userData.exists) {
-      // User exists, attempt login
-      console.log('[LOGIN] User exists in Supabase, attempting login');
-      const loginUser = loginWithSupabaseUser(deps.supabaseAuth);
-      const loginResult = await loginUser(event.email, event.password);
-      
-      if (loginResult.isError) {
-        console.error('[LOGIN] Supabase login failed:', loginResult.unwrapError());
-        
-        try {
-          const error = JSON.parse(loginResult.unwrapError().message);
-          const authResult = {
-            isAuthenticated: false,
-            reason: error.message || 'Login failed',
-            errorCode: error.details?.errorCode || 'LOGIN_FAILED',
-            errorDetails: error.details
-          };
-          return await handleFailedLogin(event, authResult, deps);
-        } catch (parseError) {
-          const authResult = {
-            isAuthenticated: false,
-            reason: 'Login failed',
-            errorCode: 'LOGIN_FAILED',
-            errorDetails: extractErrorInfo(loginResult.unwrapError())
-          };
-          return await handleFailedLogin(event, authResult, deps);
-        }
-      }
-      
-      const loginData = loginResult.unwrap();
-      console.log('[LOGIN] Supabase login successful');
-      
-      // Get companies from Zoho if available
-      let companies = [];
-      try {
-        // Usar el contactId del contacto verificado para obtener empresas
-        const zohoContactId = contactData.contact?.id;
-        if (zohoContactId) {
-          const companiesResult = await deps.n8nClient.getUserCompanies(zohoContactId);
-          if (!companiesResult.isError) {
-            companies = companiesResult.unwrap().companies;
-          }
-        }
-      } catch (error) {
-        console.warn('[LOGIN] Error fetching companies, continuing with empty list:', error);
-      }
-      
-      // Create successful login result
-      const authResult = {
-        isAuthenticated: true,
-        userId: loginData.userId,
-        email: loginData.email,
-        userDetails: {
-          ...loginData.userDetails,
-          zohoContactId: contactData.contact?.id,
-          zohoContactDetails: contactData.contact
-        },
-        companies,
-        session: loginData.session
-      };
-      
-      return await handleSuccessfulLogin(event, authResult, deps);
+export const withCompanies = (deps, contact) => (userData) =>
+  Promise.resolve(contact?.contact?.id)
+    .then(fetchCompaniesOrEmpty(deps))
+    .then(buildUserWithCompanies(userData));
+
+const fetchCompaniesOrEmpty = (deps) => (contactId) =>
+  contactId
+    ? deps.n8nClient
+        .getUserCompanies(contactId)
+        .then(({ companies }) => companies)
+        .catch((err) => {
+          console.warn('[LOGIN] Error fetching companies, continuing with empty list:', err);
+          return [];
+        })
+    : Promise.resolve([]);
+
+const buildUserWithCompanies = (userData) => (companies) => ({
+  userData,
+  companies,
+});
+
+const storeUserRegisteredEvent = (event, contact, { userData, companies }, deps) => {
+  const userRegisteredEvent = deepFreeze({
+    type: 'USER_REGISTERED',
+    userId: userData.userId,
+    email: userData.email,
+    zohoContactId: contact.contact?.id,
+    zohoContactDetails: contact.contact,
+    companies,
+    timestamp: event.timestamp,
+  });
+
+  return deps.storeEvent(userRegisteredEvent).then((result) => {
+    if (result.isError) {
+      console.error('[LOGIN] Failed to store USER_REGISTERED event:', result.unwrapError());
     } else {
-      // User doesn't exist, register new user
-      console.log('[LOGIN] User not found in Supabase, registering new user');
-      const registerUser = registerSupabaseUser(deps.supabaseAuth);
-      const registerResult = await registerUser(event.email, event.password);
-      
-      if (registerResult.isError) {
-        console.error('[LOGIN] Supabase registration failed:', registerResult.unwrapError());
-        
-        try {
-          const error = JSON.parse(registerResult.unwrapError().message);
-          const authResult = {
-            isAuthenticated: false,
-            reason: error.message || 'Registration failed',
-            errorCode: error.details?.errorCode || 'REGISTRATION_FAILED',
-            errorDetails: error.details
-          };
-          return await handleFailedLogin(event, authResult, deps);
-        } catch (parseError) {
-          const authResult = {
-            isAuthenticated: false,
-            reason: 'Registration failed',
-            errorCode: 'REGISTRATION_FAILED',
-            errorDetails: extractErrorInfo(registerResult.unwrapError())
-          };
-          return await handleFailedLogin(event, authResult, deps);
-        }
-      }
-      
-      const registerData = registerResult.unwrap();
-      console.log('[LOGIN] Supabase registration successful');
-      
-      // Get companies from Zoho if available
-      let companies = [];
-      try {
-        // Usar el contactId del contacto verificado para obtener empresas
-        const zohoContactId = contactData.contact?.id;
-        if (zohoContactId) {
-          const companiesResult = await deps.n8nClient.getUserCompanies(zohoContactId);
-          if (!companiesResult.isError) {
-            companies = companiesResult.unwrap().companies;
-          }
-        }
-      } catch (error) {
-        console.warn('[LOGIN] Error fetching companies, continuing with empty list:', error);
-      }
-      
-      // Create user registered event
-      const userRegisteredEvent = deepFreeze({
-        type: 'USER_REGISTERED',
-        userId: registerData.userId,
-        email: registerData.email,
-        zohoContactId: contactData.contact?.id,
-        zohoContactDetails: contactData.contact,
-        companies,
-        timestamp: event.timestamp
-      });
-      
-      // Store the user registered event
-      const storeResult = await deps.storeEvent(userRegisteredEvent);
-      
-      if (storeResult.isError) {
-        console.error('[LOGIN] Failed to store USER_REGISTERED event:', storeResult.unwrapError());
-      } else {
-        console.log('[LOGIN] USER_REGISTERED event stored successfully');
-      }
-      
-      // Create successful login result
-      const authResult = {
-        isAuthenticated: true,
-        userId: registerData.userId,
-        email: registerData.email,
-        userDetails: {
-          ...registerData.userDetails,
-          zohoContactId: contactData.contact?.id,
-          zohoContactDetails: contactData.contact
-        },
-        companies,
-        session: registerData.session,
-        isNewUser: true
-      };
-      
-      return await handleSuccessfulLogin(event, authResult, deps);
+      console.log('[LOGIN] USER_REGISTERED event stored successfully');
     }
-  })().catch(error => {
-    // Capturar cualquier error no manejado
-    console.error('[LOGIN] Unhandled exception in handleLoginRequested:', error);
-    const errorInfo = extractErrorInfo(error);
-    const authResult = {
-      isAuthenticated: false,
-      reason: 'Internal server error',
-      errorCode: 'INTERNAL_ERROR',
-      errorDetails: errorInfo
-    };
-    return handleFailedLogin(event, authResult, deps);
+    return buildAuthResult(event, contact, { userData, companies }, true);
   });
 };
+
+const buildAuthResult = (event, contact, { userData, companies }, isNewUser) => ({
+  isAuthenticated: true,
+  userId: userData.userId,
+  email: userData.email,
+  userDetails: {
+    ...userData.userDetails,
+    zohoContactId: contact.contact?.id,
+    zohoContactDetails: contact.contact,
+  },
+  companies,
+  session: userData.session,
+  ...(isNewUser ? { isNewUser: true } : {}),
+});
+
+
+const handleUnhandled = (event, deps) => (error) => {
+  console.error('[LOGIN] Unhandled exception in handleLoginRequested:', error);
+  const authResult = {
+    isAuthenticated: false,
+    reason: error.reason || 'Internal server error',
+    errorCode: error.errorCode || 'INTERNAL_ERROR',
+    errorDetails: error.errorDetails || extractErrorInfo(error),
+  };
+  return handleFailedLogin(event, authResult, deps);
+};
+
+const tap = (fn) => (val) => (fn(val), val);
 
 /**
  * Handles a failed login attempt

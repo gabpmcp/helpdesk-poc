@@ -133,7 +133,7 @@ const validate = (command) => {
  * Pure function to fetch history for a command
  */
 const fetchHistory = (userId, queryFn) => {
-  console.log('Fetching history for user:', userId);
+  // console.log('Fetching history for user:', userId);
   return fetchEventsForUser(queryFn)(userId);
 };
 
@@ -410,7 +410,7 @@ export const setupApiRoutes = (deps) => {
         // Fetch history if needed
         return maybeFetchHistory(validCommand, serviceFunctions)
           .then(historyResult => {
-            console.log('History fetch result:', historyResult);
+            // console.log('History fetch result:', historyResult);
             
             if (!historyResult.isOk) {
               return Promise.reject({

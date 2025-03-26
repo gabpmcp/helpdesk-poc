@@ -4,14 +4,15 @@
  */
 import 'dotenv/config'
 import { createClient } from '@supabase/supabase-js'
-import { Result, tryCatchAsync, deepFreeze } from '../utils/functional.js'
+import { tryCatchAsync, deepFreeze } from '../utils/functional.js'
 
 const { 
   ZOHO_AUTH_TOKEN, 
   ZOHO_BASE_URL, 
   PORT = 3000,
   SUPABASE_URL,
-  SUPABASE_SERVICE_KEY
+  SUPABASE_SERVICE_KEY,
+  SUPABASE_ANON_KEY
 } = process.env
 
 // Validar variables de entorno de Zoho
@@ -35,6 +36,7 @@ export const config = {
   ZOHO_BASE_URL,
   SUPABASE_URL,
   SUPABASE_SERVICE_KEY,
+  SUPABASE_ANON_KEY,
   supabaseConfigured
 }
 
