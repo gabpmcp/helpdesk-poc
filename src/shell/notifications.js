@@ -2,6 +2,7 @@
  * Handles side-effects based on events
  * Part of the imperative shell
  */
+import { getSupabaseAdminClient } from './config.js';
 import { v4 as generateUUID } from 'uuid';
 import jwt from 'jsonwebtoken';
 import { 
@@ -20,6 +21,7 @@ const ACCESS_TOKEN_EXPIRY = '1h';  // 1 hour
 const REFRESH_TOKEN_EXPIRY = '7d'; // 7 days
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 /**
  * @typedef {Object} AuthResult
@@ -223,6 +225,19 @@ const handleSupabaseError = (err) => {
   throw err;
 };
 
+const markUserAsVerified = (user) =>
+  pipeAsync(
+    () => Promise.resolve(getSupabaseAdminClient()),
+    (client) =>
+      client
+        ? client.auth.admin
+            .updateUserById(user.id, { email_confirm: true })
+            .then(({ error }) =>
+              error ? Promise.reject(supabaseError(error)) : user
+            )
+        : Promise.resolve(user)
+  )();
+
 export const loginUser = ({ supabaseUrl, supabaseAnonKey }) => (email, password) =>
   Promise.resolve({ email, password })
     .then(assertValidCredentials)
@@ -249,25 +264,8 @@ const toLoginResult = ({ access_token, user, expires_in, refresh_token }) =>
     user: user || null
   });
 
-const assertAuthAvailable = ({ supabaseAuth, email, password }) =>
-  supabaseAuth?.signIn instanceof Function
-    ? { supabaseAuth, email, password }
-    : Promise.reject(
-        new Error(
-          JSON.stringify({
-            status: 503,
-            message: 'Supabase authentication not available',
-            details: {
-              errorCode: 'SUPABASE_NOT_CONFIGURED',
-              message: 'Supabase authentication not available'
-            }
-          })
-        )
-      );
-
-
 const attemptLogin = (supabaseUrl, supabaseAnonKey) => ({ email, password }) =>
-  fetch(`${supabaseUrl}/auth/v1/token`, {
+  fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -277,7 +275,7 @@ const attemptLogin = (supabaseUrl, supabaseAnonKey) => ({ email, password }) =>
     body: JSON.stringify({
       email,
       password,
-      grant_type: 'password'
+      // grant_type: 'password'
     })
   }).then((res) =>
     res
@@ -285,17 +283,14 @@ const attemptLogin = (supabaseUrl, supabaseAnonKey) => ({ email, password }) =>
       .catch(() => ({}))
       .then((json) =>
         { console.log({json}); console.log({res}); return res.ok
-          ? json
-          : Promise.reject(
-              Object.assign(
-                new Error(json || 'Supabase login failed'),
-                {
-                  code: json.error_code || res.status,
-                  status: res.status,
-                  details: json
-                }
-              ))
-        }
+        ? json
+        : Promise.reject(
+            Object.assign(new Error(json || 'Supabase login failed'), {
+              code: json.error_code || res.status,
+              status: res.status,
+              details: json
+            })
+          )}
       )
   );
 
@@ -362,35 +357,41 @@ const signUpWithSupabase = ({ supabaseUrl, supabaseAnonKey }) => ({ email, passw
 
 const toPayload = ({ email, password }) => ({
   url: '/auth/v1/signup',
-  body: JSON.stringify({ email, password }),
-  debug: { email, password }
+  body: { email, password, email_confirm: true },
+  // debug: { email, password }
 });
 
-const postSignUpRequest = (supabaseUrl, supabaseAnonKey) => ({ url, body, debug }) =>
-  fetch(`${supabaseUrl}${url}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'apikey': supabaseAnonKey,
-      'Authorization': `Bearer ${supabaseAnonKey}`
-    },
-    body
-  }).then((res) => res.json()
-    .then((json) =>
-      res.ok
-        ? json
-        : Promise.reject(
-            Object.assign(
-              new Error(json.error?.message || 'Unknown Supabase signup error'),
-              {
-                code: json.error?.code || res.status,
-                status: res.status,
-                details: json
-              }
-            )
-          )
-    )
-  );
+const postSignUpRequest = (supabaseUrl, supabaseAnonKey) =>
+  ({ url, body, debug = false }) => {
+    console.log({ supabaseUrl, supabaseAnonKey, url, body}); 
+    return typeof body !== 'object'
+      ? Promise.reject(new Error('Body must be a plain object'))
+      : fetch(`${supabaseUrl}${url}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': supabaseAnonKey,
+            'Authorization': `Bearer ${supabaseAnonKey}`
+          },
+          body: JSON.stringify(body)
+        })
+          .then(async (res) => {
+            const json = await res.json();
+            if (debug) console.log('[Signup Response]', json);
+            return res.ok
+              ? json
+              : Promise.reject(
+                  Object.assign(
+                    new Error(json.error?.message || 'Unknown Supabase signup error'),
+                    {
+                      code: json.error?.code || res.status,
+                      status: res.status,
+                      details: json
+                    }
+                  )
+                );
+          });
+        }
 
 const validateSignUpResponse = (data) => {
   // console.log({ data });
@@ -456,6 +457,7 @@ export const registerSupabaseUser = (supabaseAuth) => (email, password) =>
     .then(assertSignUpAvailable(supabaseAuth))
     .then(signUpWithSupabase({supabaseUrl: SUPABASE_URL, supabaseAnonKey: SUPABASE_ANON_KEY}))
     .then(validateSignUpResponse)
+    .then(markUserAsVerified)
     .then(tap(logRegisterSuccess))
     .catch((err) => Promise.reject(parseError(err, 'REGISTRATION_FAILED')));
 

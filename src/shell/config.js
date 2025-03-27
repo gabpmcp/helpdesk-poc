@@ -15,6 +15,15 @@ const {
   SUPABASE_ANON_KEY
 } = process.env
 
+const supabaseAdminClient = (() =>
+  SUPABASE_SERVICE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    : null
+)();
+
+// ✅ Named export correctamente definido
+export const getSupabaseAdminClient = () => supabaseAdminClient;
+
 // Validar variables de entorno de Zoho
 if (!ZOHO_AUTH_TOKEN || !ZOHO_BASE_URL) {
   console.warn('⚠️ Warning: Missing Zoho environment variables. Some functionality may be limited.')
