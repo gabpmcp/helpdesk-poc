@@ -65,6 +65,11 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 export const notifyExternal = async (event, deps) => {
   // Use tryCatchAsync to handle errors functionally
   return tryCatchAsync(async () => {
+    // Validate that event has required email field
+    if (!event.email) {
+      throw new Error('Event is missing required email field');
+    }
+    
     // Process the event based on its type
     switch (event.type) {
       case 'LOGIN_REQUESTED':
@@ -182,7 +187,7 @@ const fetchUser = (client) => (email) =>
 
 const logUserFoundOrNull = (user) => {
   console.log(
-    `[SUPABASE] ${user?.exists ? `User found: ${user.email}` : 'User not found'}`
+    `[SUPABASE] ${user ? `User found: ${user.email}` : 'User not found'}`
   );
 };
 
@@ -218,18 +223,31 @@ const handleSupabaseError = (err) => {
   throw err;
 };
 
-/**
- * Logs in a user with Supabase Auth
- * @param {Object} supabaseAuth - Supabase auth functions
- * @returns {Function} - Function that takes email and password and returns a Result
- */
-export const loginUserWithSupabase = (supabaseAuth) => (email, password) =>
-  Promise.resolve({ supabaseAuth, email, password })
-    .then(assertAuthAvailable)
-    .then(attemptLogin)
-    .then(validateLoginResponse)
-    .then(buildLoginResult)
+export const loginUser = ({ supabaseUrl, supabaseAnonKey }) => (email, password) =>
+  Promise.resolve({ email, password })
+    .then(assertValidCredentials)
+    .then(attemptLogin(supabaseUrl, supabaseAnonKey))
+    .then(toLoginResult)
     .catch((err) => Promise.reject(parseError(err, 'LOGIN_FAILED')));
+
+const assertValidCredentials = ({ email, password }) =>
+  typeof email === 'string' && typeof password === 'string'
+    ? { email, password }
+    : Promise.reject(
+        new Error(
+          JSON.stringify({
+            status: 400,
+            message: 'Email and password must be strings',
+            details: { errorCode: 'INVALID_INPUT' }
+          })
+        )
+      );
+  
+const toLoginResult = ({ access_token, user, expires_in, refresh_token }) =>
+  deepFreeze({
+    session: { access_token, expires_in, refresh_token },
+    user: user || null
+  });
 
 const assertAuthAvailable = ({ supabaseAuth, email, password }) =>
   supabaseAuth?.signIn instanceof Function
@@ -247,10 +265,39 @@ const assertAuthAvailable = ({ supabaseAuth, email, password }) =>
         )
       );
 
-const attemptLogin = ({ supabaseAuth, email, password }) =>
-  supabaseAuth
-    .signIn({ email, password })
-    .then(({ data, error }) => ({ data, error, email }));
+
+const attemptLogin = (supabaseUrl, supabaseAnonKey) => ({ email, password }) =>
+  fetch(`${supabaseUrl}/auth/v1/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': supabaseAnonKey,
+      'Authorization': `Bearer ${supabaseAnonKey}`
+    },
+    body: JSON.stringify({
+      email,
+      password,
+      grant_type: 'password'
+    })
+  }).then((res) =>
+    res
+      .json()
+      .catch(() => ({}))
+      .then((json) =>
+        { console.log({json}); console.log({res}); return res.ok
+          ? json
+          : Promise.reject(
+              Object.assign(
+                new Error(json || 'Supabase login failed'),
+                {
+                  code: json.error_code || res.status,
+                  status: res.status,
+                  details: json
+                }
+              ))
+        }
+      )
+  );
 
 const validateLoginResponse = ({ data, error, email }) =>
   error
@@ -312,15 +359,6 @@ const signUpWithSupabase = ({ supabaseUrl, supabaseAnonKey }) => ({ email, passw
     .then(assertValidCredentials)
     .then(toPayload)
     .then(postSignUpRequest(supabaseUrl, supabaseAnonKey))
-
-const assertValidCredentials = ({ email, password }) =>
-  typeof email === 'string' && typeof password === 'string'
-    ? { email, password }
-    : Promise.reject(
-        new Error(
-          `Invalid input: email and password must be strings. Got: ${typeof email}, ${typeof password}`
-        )
-      );
 
 const toPayload = ({ email, password }) => ({
   url: '/auth/v1/signup',
@@ -432,13 +470,13 @@ const handleLoginRequested = (event, deps) =>
     .then(tap(logStart))
     .then(assertDepsAvailable(deps))
     .then(verifyContact(deps))
-    .then(storeContactData(deps))
+    .then(storeContactData)
     .then(checkSupabase(deps))
     .then(authenticateOrRegister(event, deps))
     .catch(handleUnhandled(event, deps));
 
 const logStart = ({ email }) =>
-  console.log('[LOGIN] Processing login request for:', email);
+  console.log(`[LOGIN] Processing login request for: ${email}`);
 
 const assertDepsAvailable = (deps) => (event) => {
   const missing = !deps?.n8nClient || !deps?.supabaseAuth;
@@ -446,6 +484,7 @@ const assertDepsAvailable = (deps) => (event) => {
     ? Promise.reject({
         reason: 'Authentication services not available',
         errorCode: 'SERVICE_UNAVAILABLE',
+        email: event.email // Preserve email for error handling
       })
     : event;
 };
@@ -459,7 +498,7 @@ const verifyContact = (deps) => (event) =>
         : { event, contact: result.unwrap() }
     );
 
-const storeContactData = (deps) => ({ event, contact }) =>
+const storeContactData = ({ event, contact }) =>
   Promise.resolve({ event, contact });
 
 const checkSupabase = (deps) => ({ event, contact }) =>
@@ -475,14 +514,16 @@ const authenticateOrRegister = (event, deps) => ({ contact, user }) =>
     : registerFlow(event, contact, deps);
 
 const loginFlow = (event, contact, deps) =>
-  loginUserWithSupabase(deps.supabaseAuth)(event.email, event.password)
-    .then(attachCompanies(deps, contact))
+  loginUser({ supabaseUrl: SUPABASE_URL, supabaseAnonKey: SUPABASE_ANON_KEY })(event.email, event.password)
+    .then(withCompanies(deps, contact))
     .then((companiesAndUser) =>
       buildAuthResult(event, contact, companiesAndUser, false)
     )
     .then((authResult) => handleSuccessfulLogin(event, authResult, deps))
-    .catch((err) =>
-      handleFailedLogin(event, parseError(err, 'LOGIN_FAILED'), deps)
+    .catch((err) => {
+      console.error('[LOGIN] Error logging in:', err);
+      return handleFailedLogin(event, parseError(err, 'LOGIN_FAILED'), deps);
+    }
     );
 
 const registerFlow = (event, contact, deps) =>
@@ -494,9 +535,9 @@ const registerFlow = (event, contact, deps) =>
   .then((authResult) => handleSuccessfulLogin(event, authResult, deps));
     
 export const withCompanies = (deps, contact) => (userData) =>
-  Promise.resolve(contact?.contact?.id)
+  { console.log({userData}); return Promise.resolve(contact?.contact?.id)
     .then(fetchCompaniesOrEmpty(deps))
-    .then(buildUserWithCompanies(userData));
+    .then(buildUserWithCompanies(userData)); }
 
 const fetchCompaniesOrEmpty = (deps) => (contactId) =>
   contactId
@@ -699,11 +740,10 @@ const verifyCredentials = async (email, password, deps) => {
     console.log('[AUTH] Mock authentication successful');
     return Result.ok({
       isAuthenticated: true,
-      userId: email,
-      email: email,
+      email,
       userDetails: {
         id: email,
-        email: email,
+        email,
         name: email.split('@')[0],
         role: email.includes('admin') ? 'admin' : 'user'
       },
@@ -859,7 +899,7 @@ const verifyCredentials = async (email, password, deps) => {
     }
     
     // Verificar que tengamos los datos necesarios para considerar la autenticación exitosa
-    if (!authData.userId || !authData.email) {
+    if (!authData.email) {
       console.log('[AUTH] Missing required authentication data, authentication failed');
       return Result.ok({
         isAuthenticated: false,
@@ -867,7 +907,7 @@ const verifyCredentials = async (email, password, deps) => {
         errorCode: 'MISSING_AUTH_DATA',
         errorDetails: { 
           message: 'Authentication result is missing required data',
-          missingFields: !authData.userId ? 'userId' : !authData.email ? 'email' : 'unknown'
+          missingFields: !authData.email ? 'email' : 'unknown'
         }
       });
     }
@@ -875,7 +915,6 @@ const verifyCredentials = async (email, password, deps) => {
     console.log('[AUTH] Authentication successful, processing result');
     return Result.ok({
       isAuthenticated: true,
-      userId: authData.userId,
       email: authData.email,
       userDetails: {
         ...authData.userDetails,
@@ -956,8 +995,8 @@ const verifyCredentials = async (email, password, deps) => {
 const handleLoginSucceeded = async (event, deps) => {
   return tryCatchAsync(async () => {
     // Generate secure JWT tokens
-    const accessToken = generateAccessToken(event.userId);
-    const refreshToken = generateRefreshToken(event.userId);
+    const accessToken = generateAccessToken(event.email);
+    const refreshToken = generateRefreshToken(event.email);
     
     // Create a new event with tokens (immutable pattern)
     const enrichedEvent = deepFreeze({
@@ -970,7 +1009,7 @@ const handleLoginSucceeded = async (event, deps) => {
     // This is a side effect, but isolated in this function
     const tokenEvent = deepFreeze({
       type: 'REFRESH_TOKEN_STORED',
-      userId: event.userId,
+      email: event.email,
       refreshToken,
       timestamp: event.timestamp
     });
@@ -1001,7 +1040,7 @@ const handleLoginSucceeded = async (event, deps) => {
 const handleRefreshTokenValidated = async (event, deps) => {
   // Use tryCatchAsync to handle errors functionally
   return tryCatchAsync(async () => {
-    const { refreshToken, userId } = event;
+    const { refreshToken, email } = event;
     
     // Verify the refresh token
     try {
@@ -1012,7 +1051,7 @@ const handleRefreshTokenValidated = async (event, deps) => {
         // Create invalid token event
         const invalidTokenEvent = deepFreeze({
           type: 'INVALID_REFRESH_TOKEN',
-          userId,
+          email,
           reason: 'Token is not a refresh token',
           timestamp: new Date().toISOString()
         });
@@ -1022,11 +1061,11 @@ const handleRefreshTokenValidated = async (event, deps) => {
       }
       
       // Check if token belongs to the user
-      if (decoded.userId !== userId) {
+      if (decoded.email !== email) {
         // Create invalid token event
         const invalidTokenEvent = deepFreeze({
           type: 'INVALID_REFRESH_TOKEN',
-          userId,
+          email,
           reason: 'Token does not belong to user',
           timestamp: new Date().toISOString()
         });
@@ -1036,13 +1075,13 @@ const handleRefreshTokenValidated = async (event, deps) => {
       }
       
       // Generate new tokens
-      const accessToken = generateAccessToken(userId);
-      const newRefreshToken = generateRefreshToken(userId);
+      const accessToken = generateAccessToken(email);
+      const newRefreshToken = generateRefreshToken(email);
       
       // Create token refreshed event
       const tokenRefreshedEvent = deepFreeze({
         type: 'TOKEN_REFRESHED',
-        userId,
+        email,
         accessToken,
         refreshToken: newRefreshToken,
         timestamp: new Date().toISOString()
@@ -1055,7 +1094,7 @@ const handleRefreshTokenValidated = async (event, deps) => {
       // Token verification failed
       const invalidTokenEvent = deepFreeze({
         type: 'INVALID_REFRESH_TOKEN',
-        userId,
+        email,
         reason: error.message || 'Invalid token',
         timestamp: new Date().toISOString()
       });
@@ -1069,12 +1108,12 @@ const handleRefreshTokenValidated = async (event, deps) => {
 /**
  * Generates a JWT access token
  * Pure function with no side effects
- * @param {string} userId - User ID to include in the token
+ * @param {string} email - User email to include in the token
  * @returns {string} - JWT access token
  */
-const generateAccessToken = (userId) => {
+const generateAccessToken = (email) => {
   return jwt.sign(
-    { userId, type: 'access' },
+    { email, type: 'access' },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_EXPIRY }
   );
@@ -1083,12 +1122,12 @@ const generateAccessToken = (userId) => {
 /**
  * Generates a JWT refresh token
  * Pure function with no side effects
- * @param {string} userId - User ID to include in the token
+ * @param {string} email - User email to include in the token
  * @returns {string} - JWT refresh token
  */
-const generateRefreshToken = (userId) => {
+const generateRefreshToken = (email) => {
   return jwt.sign(
-    { userId, type: 'refresh' },
+    { email, type: 'refresh' },
     JWT_SECRET,
     { expiresIn: REFRESH_TOKEN_EXPIRY }
   );
@@ -1107,7 +1146,7 @@ const handleTicketCreated = async (event, deps) => {
     // Create the ticket in the external system
     const createResult = await deps.createTicket({
       ...event.ticketDetails,
-      userId: event.userId
+      email: event.email
     });
     
     if (!createResult.isOk) {
@@ -1116,7 +1155,7 @@ const handleTicketCreated = async (event, deps) => {
       // Create ticket creation failed event
       const failedEvent = deepFreeze({
         type: 'TICKET_CREATION_FAILED',
-        userId: event.userId,
+        email: event.email,
         ticketDetails: event.ticketDetails,
         error: createResult.unwrapError().message,
         timestamp: new Date().toISOString()
@@ -1154,7 +1193,7 @@ const handleTicketUpdated = async (event, deps) => {
     const updateResult = await deps.updateTicket({
       id: event.externalTicketId || event.ticketId,
       ...event.updateDetails,
-      userId: event.userId
+      email: event.email
     });
     
     if (!updateResult.isOk) {
@@ -1163,7 +1202,7 @@ const handleTicketUpdated = async (event, deps) => {
       // Create ticket update failed event
       const failedEvent = deepFreeze({
         type: 'TICKET_UPDATE_FAILED',
-        userId: event.userId,
+        email: event.email,
         ticketId: event.ticketId,
         externalTicketId: event.externalTicketId,
         updateDetails: event.updateDetails,
@@ -1199,7 +1238,7 @@ const handleCommentAdded = async (event, deps) => {
     const commentResult = await deps.addComment({
       ticketId: event.externalTicketId || event.ticketId,
       comment: event.comment,
-      userId: event.userId
+      email: event.email
     });
     
     if (!commentResult.isOk) {
@@ -1208,7 +1247,7 @@ const handleCommentAdded = async (event, deps) => {
       // Create comment failed event
       const failedEvent = deepFreeze({
         type: 'COMMENT_FAILED',
-        userId: event.userId,
+        email: event.email,
         ticketId: event.ticketId,
         externalTicketId: event.externalTicketId,
         comment: event.comment,
@@ -1246,7 +1285,7 @@ const handleTicketEscalated = async (event, deps) => {
       id: event.externalTicketId || event.ticketId,
       escalationLevel: event.escalationLevel,
       reason: event.reason,
-      userId: event.userId
+      email: event.email
     });
     
     if (!escalateResult.isOk) {
@@ -1255,7 +1294,7 @@ const handleTicketEscalated = async (event, deps) => {
       // Create escalation failed event
       const failedEvent = deepFreeze({
         type: 'TICKET_ESCALATION_FAILED',
-        userId: event.userId,
+        email: event.email,
         ticketId: event.ticketId,
         externalTicketId: event.externalTicketId,
         escalationLevel: event.escalationLevel,

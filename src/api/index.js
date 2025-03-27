@@ -62,8 +62,8 @@ const verifyJwt = async (ctx, next) => {
     return;
   }
   
-  // Set user ID from token
-  ctx.state.userId = verificationResult.unwrap().userId;
+  // Set email from token
+  ctx.state.email = verificationResult.unwrap().email;
   
   await next();
 };
@@ -105,36 +105,65 @@ const unwrapNestedResult = (result) => {
 /**
  * Pure function to extract command from context
  */
-const extractCommand = async (ctx) => {
-  const result = await parseBody(ctx);
-  console.log('Raw parse result:', result);
-  
-  if (!result.isOk) {
-    return result;
-  }
-  
-  // Fully unwrap any nested Result objects
-  const unwrappedCommand = unwrapNestedResult(result.unwrap());
-  console.log('Fully unwrapped command:', unwrappedCommand);
-  
-  // Return a new Result with the unwrapped command
-  return Result.ok(unwrappedCommand);
+const extractCommand = async(ctx) => {
+  return parseBody(ctx)
+    .then(body => {
+      console.log('Parsing request body:', body);
+      const command = body.unwrap();
+
+      // Validate that body is an object
+      if (!command || typeof command !== 'object') {
+        return Result.error(new Error('Invalid request body: must be an object'));
+      }
+      
+      // Validate that body has a type property
+      if (!command.type) {
+        return Result.error(new Error('Invalid command: missing type property'));
+      }
+      
+      // Validate that body has an email property (required for all commands)
+      if (!command.email) {
+        return Result.error(new Error('Invalid command: missing required email property'));
+      }
+      
+      // Return the command with timestamp if not provided
+      return Result.ok({
+        ...command,
+        timestamp: command.timestamp || Date.now()
+      });
+    });
 };
 
 /**
  * Pure function to validate a command
  */
 const validate = (command) => {
-  console.log('Validating command:', command);
-  return validateCommand(command);
+  // Ensure command has an email
+  if (!command.email) {
+    return Result.error('Command is missing required email field');
+  }
+  
+  // Validate command using schema validator
+  const validationResult = validateCommand(command);
+  
+  if (validationResult.isError) {
+    return Result.error(validationResult.unwrapError());
+  }
+  
+  return validationResult;
 };
 
 /**
  * Pure function to fetch history for a command
  */
-const fetchHistory = (userId, queryFn) => {
-  // console.log('Fetching history for user:', userId);
-  return fetchEventsForUser(queryFn)(userId);
+const fetchHistory = (email, queryFn) => {
+  // Validate email is provided
+  if (!email) {
+    return Result.error(new Error('Missing required email for fetching history'));
+  }
+  
+  // console.log('Fetching history for user:', email);
+  return fetchEventsForUser(queryFn)(email);
 };
 
 /**
@@ -143,7 +172,7 @@ const fetchHistory = (userId, queryFn) => {
 const maybeFetchHistory = async (command, deps) => {
   // Some commands may require history to process
   // For now, we'll just fetch history for all commands
-  return fetchHistory(command.userId, deps.queryFn);
+  return fetchHistory(command.email, deps.queryFn);
 };
 
 /**
@@ -208,7 +237,6 @@ const notify$ = async (event, deps) => {
       // Simulate a successful login for testing
       const loginSucceededEvent = deepFreeze({
         type: 'LOGIN_SUCCEEDED',
-        userId: event.userId,
         email: event.email,
         timestamp: event.timestamp,
         accessToken: 'mock-access-token-' + Date.now(),
@@ -240,7 +268,7 @@ const shapeResponse = (event) => {
     case 'LOGIN_SUCCEEDED':
       return {
         success: true,
-        userId: event.userId,
+        email: event.email,
         accessToken: event.accessToken,
         refreshToken: event.refreshToken
       };
@@ -248,7 +276,7 @@ const shapeResponse = (event) => {
     case 'USER_REGISTERED':
       return {
         success: true,
-        userId: event.userId,
+        email: event.email,
         isNewUser: true,
         zohoContactId: event.zohoContactId
       };
@@ -262,7 +290,7 @@ const shapeResponse = (event) => {
     case 'TOKEN_REFRESHED':
       return {
         success: true,
-        userId: event.userId,
+        email: event.email,
         accessToken: event.accessToken,
         refreshToken: event.refreshToken
       };
@@ -301,7 +329,7 @@ const createExternalServiceFunctions = (deps) => {
         if (email === 'test@example.com' && password === 'password123') {
           console.log('[MOCK AUTH] Valid test credentials');
           return Promise.resolve(Result.ok({
-            userId: 'test-user-id',
+            email: 'test@example.com',
             userDetails: {
               name: 'Test User',
               email: 'test@example.com',
@@ -406,13 +434,13 @@ export const setupApiRoutes = (deps) => {
         console.log('Validated command:', validCommand);
         return Promise.resolve(validCommand);
       })
-      .then(validCommand => {
+      .then(async validCommand => {
         // Fetch history if needed
         return maybeFetchHistory(validCommand, serviceFunctions)
           .then(historyResult => {
-            // console.log('History fetch result:', historyResult);
             
             if (!historyResult.isOk) {
+              console.log('History fetch result:', historyResult);
               return Promise.reject({
                 status: 500,
                 error: 'Failed to fetch history'
@@ -437,7 +465,7 @@ export const setupApiRoutes = (deps) => {
             return Promise.resolve(event);
           });
       })
-      .then(event => {
+      .then(async event => {
         // Store the event
         return storeEvent$(event, serviceFunctions)
           .then(storeResult => {
@@ -455,7 +483,7 @@ export const setupApiRoutes = (deps) => {
             return Promise.resolve(storedEvent);
           });
       })
-      .then(storedEvent => {
+      .then(async storedEvent => {
         // Process notifications
         return notify$(storedEvent, serviceFunctions)
           .then(notifyResult => {
@@ -495,11 +523,11 @@ export const setupApiRoutes = (deps) => {
   });
   
   // --- State reconstruction endpoint ---
-  router.get('/state/:userId', verifyJwt, async (ctx) => {
-    const { userId } = ctx.params;
+  router.get('/state/:email', verifyJwt, async (ctx) => {
+    const { email } = ctx.params;
     
     // Verify that the requesting user matches the token
-    if (userId !== ctx.state.userId) {
+    if (email !== ctx.state.email) {
       ctx.status = 403;
       ctx.body = deepFreeze({ error: 'Unauthorized access to user state' });
       return;
@@ -507,7 +535,7 @@ export const setupApiRoutes = (deps) => {
     
     try {
       // Fetch all events for the user
-      const eventsResult = await fetchEventsForUser(serviceFunctions.queryFn)(userId);
+      const eventsResult = await fetchEventsForUser(serviceFunctions.queryFn)(email);
       
       if (!eventsResult.isOk) {
         ctx.status = 500;
@@ -533,11 +561,11 @@ export const setupApiRoutes = (deps) => {
   
   // --- User authentication status endpoint ---
   router.get('/auth/status', verifyJwt, async (ctx) => {
-    const { userId } = ctx.state;
+    const { email } = ctx.state;
     
     try {
       // Fetch authentication events for the user
-      const authEventsResult = await fetchAuthEvents(serviceFunctions.queryFn)(userId);
+      const authEventsResult = await fetchAuthEvents(serviceFunctions.queryFn)(email);
       
       if (!authEventsResult.isOk) {
         ctx.status = 500;
@@ -561,7 +589,7 @@ export const setupApiRoutes = (deps) => {
       // Return authentication status
       ctx.status = 200;
       ctx.body = deepFreeze({
-        userId,
+        email,
         lastAuthenticated: latestEvent.timestamp,
         status: latestEvent.type === 'LOGIN_SUCCEEDED' ? 'authenticated' : 'unauthenticated'
       });

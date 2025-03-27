@@ -27,6 +27,7 @@ const USER_ACTIVITY_TABLE = 'user_activity';
 export const storeEvent = (persistFn) => async (event) => {
   // Use tryCatchAsync to handle errors functionally
   return tryCatchAsync(async () => {
+    // console.log({ event });
     // Ensure event has a timestamp if not already present
     const eventWithTimestamp = deepFreeze({
       ...event,
@@ -36,7 +37,7 @@ export const storeEvent = (persistFn) => async (event) => {
     // Insert into the events table with the new schema
     const eventResult = await persistFn(EVENTS_TABLE, {
       id: generateUUID(),
-      user_id: event.userId,
+      email: event.email, // Usar email como identificador de agregado
       type: event.type,
       payload: eventWithTimestamp
     });
@@ -55,9 +56,9 @@ export const storeEvent = (persistFn) => async (event) => {
       // Usar un enfoque funcional para manejar el registro de actividad del usuario
       // No esperamos a que se complete, para no bloquear el flujo principal
       persistFn(USER_ACTIVITY_TABLE, {
-        user_id: event.userId,
+        email: event.email, // Usar email como identificador de agregado
         activity_type: event.type,
-        timestamp: eventWithTimestamp.timestamp
+        created_at: eventWithTimestamp.timestamp
       })
       .then(result => {
         if (result.error) {
@@ -81,18 +82,21 @@ export const storeEvent = (persistFn) => async (event) => {
  */
 export const fetchEventsByUserAndFilters = (queryFn) => async (params) => {
   return tryCatchAsync(async () => {
-    const { userId, filters = {}, select = 'payload', order = 'created_at' } = params;
+    console.log('Fetching events:', params);
+    const { email, filters = {}, select = 'payload', order = 'created_at' } = params;
     
     const queryParams = {
       table: EVENTS_TABLE,
       filters: {
-        user_id: userId,
+        email, // Usar email como identificador de agregado
         ...filters
       },
       select,
       order
     };
-    
+
+    console.log('Query params:', queryParams);
+
     const result = await queryFn(queryParams);
       
     if (result.error) {
@@ -110,9 +114,9 @@ export const fetchEventsByUserAndFilters = (queryFn) => async (params) => {
  * Fetches all events for a specific user
  * Returns a Result with the events or an error
  */
-export const fetchEventsForUser = (queryFn) => async (userId) => {
+export const fetchEventsForUser = (queryFn) => async (email) => {
   return fetchEventsByUserAndFilters(queryFn)({
-    userId,
+    email,
     filters: {}
   });
 };
@@ -121,9 +125,9 @@ export const fetchEventsForUser = (queryFn) => async (userId) => {
  * Fetches events of a specific type for a user
  * Returns a Result with the events or an error
  */
-export const fetchEventsByType = (queryFn) => async (userId, eventType) => {
+export const fetchEventsByType = (queryFn) => async (email, eventType) => {
   return fetchEventsByUserAndFilters(queryFn)({
-    userId,
+    email,
     filters: {
       type: eventType
     }
@@ -161,11 +165,11 @@ export const fetchTicketEvents = (queryFn) => async (ticketId) => {
  * Fetches user authentication events (login and token refreshes)
  * Returns a Result with the events or an error
  */
-export const fetchAuthEvents = (queryFn) => async (userId) => {
+export const fetchAuthEvents = (queryFn) => async (email) => {
   return fetchEventsByUserAndFilters(queryFn)({
-    userId,
+    email,
     filters: {
-      types: ['LOGIN_SUCCEEDED', 'TOKEN_REFRESHED', 'INVALID_REFRESH_TOKEN']
+      type: ['LOGIN_SUCCEEDED', 'TOKEN_REFRESHED', 'INVALID_REFRESH_TOKEN']
     }
   });
 };
@@ -174,12 +178,12 @@ export const fetchAuthEvents = (queryFn) => async (userId) => {
  * Fetches recent user activity from the user_activity table
  * Returns a Result with the activity or an error
  */
-export const fetchUserActivity = (queryFn) => async (userId, limit = 10) => {
+export const fetchUserActivity = (queryFn) => async (email) => {
   return tryCatchAsync(async () => {
     const queryParams = {
       table: USER_ACTIVITY_TABLE,
       filters: {
-        user_id: userId
+        email // Usar email como identificador de agregado
       },
       select: '*',
       order: 'created_at',
@@ -190,11 +194,11 @@ export const fetchUserActivity = (queryFn) => async (userId, limit = 10) => {
     const result = await queryFn(queryParams);
       
     if (result.error) {
-      return Promise.reject(new Error(`Failed to fetch user activity: ${result.error.message}`));
+      throw new Error(`Failed to fetch user activity: ${result.unwrapError().message}`);
     }
     
-    // Freeze the activity data to ensure immutability
-    return deepFreeze(result.data || []);
+    // Map and freeze each activity to ensure immutability
+    return (result.unwrap() || []).map(deepFreeze);
   })();
 };
 
@@ -220,8 +224,8 @@ export const createSupabaseQueryFn = (supabaseClient) => async (params) => {
     
     // Aplicar filtros de forma funcional
     const withFilters = Object.entries(filters).reduce((query, [key, value]) => {
-      if (key === 'user_id' && value) {
-        return query.eq('user_id', value);
+      if (key === 'email' && value) {
+        return query.eq('email', value);
       } else if (key === 'type' && value) {
         return query.eq('type', value);
       } else if (key === 'types' && Array.isArray(value) && value.length > 0) {

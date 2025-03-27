@@ -30,7 +30,6 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
     case 'LOGIN_ATTEMPT':
       return {
         type: 'LOGIN_REQUESTED',
-        userId: command.userId,
         email: command.email,
         password: command.password, // Include password for validation in shell
         timestamp
@@ -38,18 +37,18 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
       
     case 'REFRESH_TOKEN':
       // Perform preliminary validation based on event history
-      const validationResult = validateRefreshTokenFromHistory(command.userId, command.refreshToken, eventHistory);
+      const validationResult = validateRefreshTokenFromHistory(command.email, command.refreshToken, eventHistory);
       
       return validationResult.isValid
         ? {
             type: 'REFRESH_TOKEN_VALIDATED',
-            userId: command.userId,
+            email: command.email,
             refreshToken: command.refreshToken,
             timestamp
           }
         : {
             type: 'INVALID_REFRESH_TOKEN',
-            userId: command.userId,
+            email: command.email,
             reason: validationResult.reason,
             timestamp
           };
@@ -57,7 +56,7 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
     case 'CREATE_TICKET':
       return {
         type: 'TICKET_CREATED',
-        userId: command.userId,
+        email: command.email,
         ticketId: generateUUID(),
         details: command.ticketDetails,
         timestamp
@@ -66,7 +65,7 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
     case 'UPDATE_TICKET':
       return {
         type: 'TICKET_UPDATED',
-        userId: command.userId,
+        email: command.email,
         ticketId: command.ticketId,
         updates: command.updates,
         timestamp
@@ -75,7 +74,7 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
     case 'ADD_COMMENT':
       return {
         type: 'COMMENT_ADDED',
-        userId: command.userId,
+        email: command.email,
         ticketId: command.ticketId,
         commentId: generateUUID(),
         comment: command.comment,
@@ -85,7 +84,7 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
     case 'ESCALATE_TICKET':
       return {
         type: 'TICKET_ESCALATED',
-        userId: command.userId,
+        email: command.email,
         ticketId: command.ticketId,
         timestamp
       };
@@ -93,14 +92,14 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
     case 'FETCH_DASHBOARD':
       return {
         type: 'DASHBOARD_REQUESTED',
-        userId: command.userId,
+        email: command.email,
         timestamp
       };
       
     default:
       return { 
-        type: 'COMMAND_REJECTED', 
-        reason: 'Unknown command type',
+        type: 'UNKNOWN_COMMAND',
+        email: command.email,
         originalCommand: command.type,
         timestamp
       };
@@ -113,7 +112,7 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
  * Cryptographic verification is deferred to the shell layer
  * Returns an immutable validation result object
  */
-const validateRefreshTokenFromHistory = (userId, refreshToken, eventHistory) => {
+const validateRefreshTokenFromHistory = (email, refreshToken, eventHistory) => {
   // If no event history is provided, we can't validate the token
   if (!eventHistory || !Array.isArray(eventHistory) || eventHistory.length === 0) {
     return deepFreeze({ isValid: false, reason: 'Token not found' });
@@ -122,7 +121,7 @@ const validateRefreshTokenFromHistory = (userId, refreshToken, eventHistory) => 
   // Find all token-related events for this user
   const relevantEvents = eventHistory
     .filter(event => 
-      event.userId === userId && 
+      event.email === email && 
       (event.type === 'LOGIN_SUCCEEDED' || 
        event.type === 'TOKEN_REFRESHED' || 
        event.type === 'INVALID_REFRESH_TOKEN')
@@ -184,7 +183,6 @@ export const applyEvent = (state, event) => {
       return deepFreeze({
         ...state,
         user: {
-          id: event.userId,
           email: event.email,
           lastLogin: event.timestamp,
           accessToken: event.accessToken,
@@ -218,7 +216,7 @@ export const applyEvent = (state, event) => {
           ...state.tickets,
           {
             id: event.ticketId,
-            userId: event.userId,
+            email: event.email,
             details: event.details,
             status: 'Open',
             createdAt: event.timestamp,
@@ -248,7 +246,7 @@ export const applyEvent = (state, event) => {
                   ...ticket.comments,
                   {
                     id: event.commentId,
-                    userId: event.userId,
+                    email: event.email,
                     text: event.comment,
                     timestamp: event.timestamp
                   }

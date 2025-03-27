@@ -10,7 +10,7 @@ import { Result, deepFreeze } from '../utils/functional.js';
  */
 export const baseCommandSchema = z.object({
   type: z.string(),
-  userId: z.string(),
+  email: z.string().email("Email válido requerido como identificador de agregado"),
   timestamp: z.number().optional().default(() => Date.now())
 });
 
@@ -19,7 +19,6 @@ export const baseCommandSchema = z.object({
  */
 export const loginAttemptSchema = baseCommandSchema.extend({
   type: z.literal('LOGIN_ATTEMPT'),
-  email: z.string().email(),
   password: z.string()
 });
 

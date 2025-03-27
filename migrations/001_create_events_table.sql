@@ -17,29 +17,28 @@ CREATE TYPE event_type AS ENUM (
 -- Create events table (main event store for Event Sourcing)
 CREATE TABLE IF NOT EXISTS events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL,
+  email TEXT NOT NULL,
   type TEXT NOT NULL, -- Using TEXT instead of event_type for flexibility
   payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Create index for efficient querying of events by user_id
-CREATE INDEX idx_events_user_id ON events(user_id);
+-- Create index for efficient querying of events by email
+CREATE INDEX idx_events_email ON events(email);
 
 -- Create composite index for efficient event sourcing queries
-CREATE INDEX idx_events_user_id_created_at ON events(user_id, created_at);
+CREATE INDEX idx_events_email_created_at ON events(email, created_at);
 
 -- Create user_activity table for tracking login and token refresh activities
 CREATE TABLE IF NOT EXISTS user_activity (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL,
+  email TEXT NOT NULL,
   activity_type TEXT NOT NULL,
-  timestamp BIGINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Create index for efficient querying of user activity
-CREATE INDEX idx_user_activity_user_id ON user_activity(user_id);
+CREATE INDEX idx_user_activity_email ON user_activity(email);
 
 -- Apply Row Level Security (RLS)
 -- Enable RLS on events table
@@ -48,7 +47,7 @@ ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 -- Create policy for events table: users can only read their own events
 CREATE POLICY events_select_policy ON events
   FOR SELECT
-  USING (auth.uid() = user_id);
+  USING (auth.email()::text = email);
 
 -- Create policy for events table: only service role can insert events
 CREATE POLICY events_insert_policy ON events
@@ -61,7 +60,7 @@ ALTER TABLE user_activity ENABLE ROW LEVEL SECURITY;
 -- Create policy for user_activity table: users can only read their own activity
 CREATE POLICY user_activity_select_policy ON user_activity
   FOR SELECT
-  USING (auth.uid() = user_id);
+  USING (auth.email()::text = email);
 
 -- Create policy for user_activity table: only service role can insert activity
 CREATE POLICY user_activity_insert_policy ON user_activity

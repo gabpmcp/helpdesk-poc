@@ -10,6 +10,7 @@ This project implements a helpdesk API following Functional Core, Imperative She
 - **Immutability**: No mutable data structures or mutable control flows are used.
 - **Functional Error Handling**: Errors are represented as values using the Result type pattern, not exceptions.
 - **Pure Functions**: Functions have no side effects, always return the same output for the same input.
+- **Aggregate Identification**: Email is used as the aggregate identifier throughout the system.
 
 ## Project Structure
 
@@ -24,7 +25,7 @@ This project implements a helpdesk API following Functional Core, Imperative She
 │    ├── eventStore.js             # Supabase interaction: store & fetch events
 │    └── notifications.js          # Handles side-effects based on events
 ├── /api
-│    └── index.js                  # Define /api/commands and /api/state/:userId
+│    └── index.js                  # Define /api/commands and /api/state/:email
 ├── /utils
 │    └── functional.js             # Functional programming utilities
 └── index.js                       # Glue file (wires together server & shell)
@@ -37,7 +38,7 @@ This project implements a helpdesk API following Functional Core, Imperative She
 ### FCIS Endpoints
 
 - **POST /api/commands**: Centralized endpoint to receive commands from the frontend.
-- **GET /api/state/:userId**: Endpoint to reconstruct user state from events.
+- **GET /api/state/:email**: Endpoint to reconstruct user state from events.
 
 ## Data Flow
 
@@ -46,7 +47,7 @@ This project implements a helpdesk API following Functional Core, Imperative She
 3. If the command is valid, an event is generated using the pure transition function, returning a Result.
 4. The event is stored in Supabase (side effect in the shell layer).
 5. External services like Zoho are notified (side effect in the shell layer).
-6. The frontend can reconstruct the user's state by querying `/api/state/:userId`.
+6. The frontend can reconstruct the user's state by querying `/api/state/:email`.
 
 ## Command Types
 
@@ -100,7 +101,7 @@ This project implements a helpdesk API following Functional Core, Imperative She
   - Signature verification using JWT_SECRET
   - Expiration time validation
   - Token type validation (access vs refresh)
-  - User ID validation
+  - Email validation
 
 ## Database Setup
 
@@ -110,14 +111,14 @@ The application uses Supabase as the event store for the Event Sourcing pattern.
 
 1. **events**: Main event store table
    - `id`: UUID primary key
-   - `user_id`: UUID of the user associated with the event
+   - `email`: Email of the user associated with the event (aggregate identifier)
    - `type`: Event type (e.g., LOGIN_SUCCEEDED, TOKEN_REFRESHED)
    - `payload`: JSONB containing event-specific data
    - `created_at`: Timestamp when the event was created
 
 2. **user_activity**: Tracks user login and token refresh activities
    - `id`: UUID primary key
-   - `user_id`: UUID of the user
+   - `email`: Email of the user (aggregate identifier)
    - `activity_type`: Type of activity (e.g., LOGIN, TOKEN_REFRESH)
    - `timestamp`: Unix timestamp of the activity
    - `created_at`: Timestamp when the record was created
@@ -125,7 +126,7 @@ The application uses Supabase as the event store for the Event Sourcing pattern.
 ### Security
 
 The database uses Supabase Row Level Security (RLS) to ensure:
-- Users can only read events associated with their own user_id
+- Users can only read events associated with their own email
 - Only the backend service can write events (using the service key)
 
 ### Applying Migrations
@@ -137,17 +138,18 @@ To set up the database schema in your Supabase project:
 3. Copy the contents of `/migrations/001_create_events_table.sql`
 4. Paste into the SQL Editor and run the query
 
-Alternatively, you can use the Supabase CLI to apply migrations:
+Alternatively, you can use the provided migration script:
 
 ```bash
-# Install Supabase CLI if not already installed
-npm install -g supabase
+# Install dependencies if needed
+npm install
 
-# Login to Supabase
-supabase login
+# Set environment variables in .env file
+# SUPABASE_URL=your_supabase_url
+# SUPABASE_SERVICE_KEY=your_service_key
 
-# Apply migration
-supabase db push -d ./migrations
+# Run migrations
+node run-migrations.js
 ```
 
 ## Environment Variables
@@ -177,7 +179,7 @@ JWT_SECRET=jwt_secret_key
 
 ## Frontend Integration
 
-The frontend should communicate exclusively with the backend, sending commands to `/api/commands` and obtaining the user state through `/api/state/:userId`. It should not have direct dependencies on external services like Zoho or Supabase.
+The frontend should communicate exclusively with the backend, sending commands to `/api/commands` and obtaining the user state through `/api/state/:email`. It should not have direct dependencies on external services like Zoho or Supabase.
 
 ## Error Handling
 
