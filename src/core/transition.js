@@ -32,6 +32,7 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
         type: 'LOGIN_REQUESTED',
         email: command.email,
         password: command.password, // Include password for validation in shell
+        role: command.role || 'user', // Add role for authorization
         timestamp
       };
       
@@ -71,36 +72,38 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
         timestamp
       };
       
+    case 'CLOSE_TICKET':
+      return {
+        type: 'TICKET_CLOSED',
+        email: command.email,
+        ticketId: command.ticketId,
+        reason: command.reason,
+        timestamp
+      };
+      
     case 'ADD_COMMENT':
       return {
         type: 'COMMENT_ADDED',
         email: command.email,
         ticketId: command.ticketId,
         commentId: generateUUID(),
-        comment: command.comment,
+        content: command.content,
         timestamp
       };
       
-    case 'ESCALATE_TICKET':
+    case 'LOGOUT':
       return {
-        type: 'TICKET_ESCALATED',
-        email: command.email,
-        ticketId: command.ticketId,
-        timestamp
-      };
-      
-    case 'FETCH_DASHBOARD':
-      return {
-        type: 'DASHBOARD_REQUESTED',
+        type: 'USER_LOGGED_OUT',
         email: command.email,
         timestamp
       };
       
     default:
-      return { 
-        type: 'UNKNOWN_COMMAND',
-        email: command.email,
-        originalCommand: command.type,
+      return {
+        type: 'COMMAND_REJECTED',
+        email: command.email || 'unknown',
+        reason: `Unknown command type: ${command.type}`,
+        originalCommand: command,
         timestamp
       };
   }

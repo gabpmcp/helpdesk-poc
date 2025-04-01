@@ -7,6 +7,7 @@
         "dev": "nodemon --exec node --require dotenv/config src/index.js"
     },
     "dependencies": {
+        "@koa/cors": "^5.0.0",
         "@koa/router": "^12.0.0",
         "@supabase/supabase-js": "^2.49.3",
         "cross-fetch": "^4.1.0",

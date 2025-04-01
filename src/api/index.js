@@ -15,14 +15,40 @@ import {
   createSupabasePersistFn
 } from '../shell/eventStore.js';
 import { notifyExternal } from '../shell/notifications.js';
-import { Result, tryCatchAsync, deepFreeze, pipe } from '../utils/functional.js';
+import { Result, tryCatchAsync, deepFreeze } from '../utils/functional.js';
+import * as zohoProxyService from '../services/zohoProxyService.js';
+import { setupProjectionRoutes, setupWebhookRoutes, setupDashboardRoutes, setupZohoApiRoutes } from './projections.js';
 
-// JWT secret key (should be in env vars in production)
+/**
+ * JWT secret key (should be in env vars in production)
+ */
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 /**
+ * CORS middleware factory - Configura CORS para rutas que requieren credenciales
+ * @param {Function} handler - Controlador de ruta
+ * @returns {Function} Controlador con CORS configurado
+ */
+const withCors = handler => async (ctx, next) => {
+  // Configurar encabezados CORS
+  ctx.set('Access-Control-Allow-Origin', 'http://localhost:5172');
+  ctx.set('Access-Control-Allow-Credentials', 'true');
+  ctx.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  ctx.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+  
+  // Responder inmediatamente a las solicitudes OPTIONS
+  if (ctx.method === 'OPTIONS') {
+    ctx.status = 204;
+    return;
+  }
+  
+  // Ejecutar el controlador original
+  return handler(ctx, next);
+};
+
+/**
  * JWT verification middleware
- * Skip verification for login attempts
+ * Skip verification for login attempts and projection endpoints
  */
 const verifyJwt = async (ctx, next) => {
   // Skip JWT verification for login attempts
@@ -35,6 +61,11 @@ const verifyJwt = async (ctx, next) => {
         return next();
       }
     }
+  }
+
+  // Skip JWT verification for projection endpoints (public access)
+  if (ctx.path.startsWith('/projections/')) {
+    return next();
   }
 
   const token = ctx.headers.authorization?.split(' ')[1];
@@ -521,6 +552,143 @@ export const setupApiRoutes = (deps) => {
         });
       });
   });
+
+  // --- Zoho API Proxy Endpoints ---
+  
+  // Reports Overview Endpoint - Refactorizado para usar n8n con enfoque declarativo
+  router.get('/api/zoho/reports-overview', withCors(async (ctx) => {
+    try {
+      // Usar el servicio zohoProxyService con enfoque declarativo
+      const data = await zohoProxyService.getReportsOverview();
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze(data);
+    } catch (error) {
+      console.error('Error fetching reports overview from n8n:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch reports overview from n8n',
+        source: 'n8n-workflow'
+      });
+    }
+  }));
+  
+  // Tickets Endpoint
+  router.get('/api/zoho/tickets', verifyJwt, withCors(async (ctx) => {
+    try {
+      const filters = ctx.query;
+      const data = await zohoProxyService.getTickets(filters);
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze(data);
+    } catch (error) {
+      console.error('Error proxying tickets:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch tickets' 
+      });
+    }
+  }));
+
+  // Ticket Detail Endpoint
+  router.get('/api/zoho/tickets/:id', verifyJwt, withCors(async (ctx) => {
+    try {
+      const { id } = ctx.params;
+      const result = await zohoProxyService.getTicketById(id);
+      
+      if (!result.isOk) {
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: result.unwrapError().message || 'Failed to fetch ticket' 
+        });
+        return;
+      }
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze(result.unwrap());
+    } catch (error) {
+      console.error('Error proxying ticket detail:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch ticket' 
+      });
+    }
+  }));
+  
+  // Categories Endpoint
+  router.get('/api/zoho/categories', verifyJwt, withCors(async (ctx) => {
+    try {
+      const result = await zohoProxyService.getCategories();
+      
+      if (!result.isOk) {
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: result.unwrapError().message || 'Failed to fetch categories' 
+        });
+        return;
+      }
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze(result.unwrap());
+    } catch (error) {
+      console.error('Error proxying categories:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch categories' 
+      });
+    }
+  }));
+  
+  // Create Ticket Endpoint
+  router.post('/api/zoho/tickets', verifyJwt, withCors(async (ctx) => {
+    try {
+      const ticketData = ctx.request.body;
+      const result = await zohoProxyService.createTicket(ticketData);
+      
+      if (!result.isOk) {
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: result.unwrapError().message || 'Failed to create ticket' 
+        });
+        return;
+      }
+      
+      ctx.status = 201;
+      ctx.body = deepFreeze(result.unwrap());
+    } catch (error) {
+      console.error('Error creating ticket:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to create ticket' 
+      });
+    }
+  }));
+  
+  // Add Comment Endpoint
+  router.post('/api/zoho/tickets/:id/comments', verifyJwt, withCors(async (ctx) => {
+    try {
+      const { id } = ctx.params;
+      const commentData = ctx.request.body;
+      const result = await zohoProxyService.addComment(id, commentData);
+      
+      if (!result.isOk) {
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: result.unwrapError().message || 'Failed to add comment' 
+        });
+        return;
+      }
+      
+      ctx.status = 201;
+      ctx.body = deepFreeze(result.unwrap());
+    } catch (error) {
+      console.error('Error adding comment:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to add comment' 
+      });
+    }
+  }));
   
   // --- State reconstruction endpoint ---
   router.get('/state/:email', verifyJwt, async (ctx) => {
@@ -601,4 +769,100 @@ export const setupApiRoutes = (deps) => {
   });
   
   return router;
+};
+
+/**
+ * Initialize API routes
+ * @param {Object} app - Koa app instance
+ * @param {Object} deps - Dependencies
+ */
+export const initializeApi = (app, deps = {}) => {
+  // Setup CORS headers for all routes
+  app.use(async (ctx, next) => {
+    ctx.set('Access-Control-Allow-Origin', '*');
+    ctx.set('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    ctx.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    if (ctx.method === 'OPTIONS') {
+      ctx.status = 204;
+      return;
+    }
+    await next();
+  });
+
+  // Apply body parser middleware
+  app.use(bodyParser());
+  
+  // Setup API routes
+  const apiRouter = setupApiRoutes(deps);
+  
+  // Setup projection routes
+  const projectionRouter = setupProjectionRoutes();
+  
+  // Setup webhook routes
+  const webhookRouter = setupWebhookRoutes();
+  
+  // Setup dashboard routes
+  const dashboardRouter = setupDashboardRoutes();
+  
+  // Setup Zoho API routes
+  const zohoApiRouter = setupZohoApiRoutes();
+  
+  // Apply all routers
+  app.use(apiRouter.routes());
+  app.use(apiRouter.allowedMethods());
+  
+  app.use(projectionRouter.routes());
+  app.use(projectionRouter.allowedMethods());
+  
+  app.use(webhookRouter.routes());
+  app.use(webhookRouter.allowedMethods());
+  
+  app.use(dashboardRouter.routes());
+  app.use(dashboardRouter.allowedMethods());
+  
+  app.use(zohoApiRouter.routes());
+  app.use(zohoApiRouter.allowedMethods());
+  
+  // Add webhook-test endpoint for testing n8n webhooks
+  const webhookTestRouter = new Router({
+    prefix: '/webhook-test'
+  });
+  
+  webhookTestRouter.all('(.*)', async (ctx) => {
+    // Forward the request to n8n
+    const n8nUrl = process.env.N8N_BASE_URL || 'http://localhost:5678';
+    const path = ctx.path.replace('/webhook-test', '');
+    const url = `${n8nUrl}${path}`;
+    
+    console.log(`Forwarding request to n8n: ${url}`);
+    
+    try {
+      const response = await fetch(url, {
+        method: ctx.method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...ctx.headers
+        },
+        body: ctx.request.method !== 'GET' ? JSON.stringify(ctx.request.body) : undefined
+      });
+      
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        ctx.body = await response.json();
+      } else {
+        ctx.body = await response.text();
+      }
+      
+      ctx.status = response.status;
+    } catch (error) {
+      console.error('Error forwarding to n8n:', error);
+      ctx.status = 500;
+      ctx.body = { error: error.message };
+    }
+  });
+  
+  app.use(webhookTestRouter.routes());
+  app.use(webhookTestRouter.allowedMethods());
+  
+  return app;
 };

@@ -3,7 +3,8 @@
  * Wires together server and shell components
  */
 import Koa from 'koa';
-import { setupApiRoutes } from './api/index.js';
+import cors from '@koa/cors';
+import { initializeApi } from './api/index.js';
 import { supabaseClient, supabaseAuth, config } from './shell/config.js';
 import n8nClient from './shell/n8nClient.js';
 
@@ -25,6 +26,15 @@ const deps = {
 /**
  * Configure middleware and routes
  */
+
+// Enable CORS for all routes with specific origin
+app.use(cors({
+  origin: 'http://localhost:5172', // Especificar exactamente el origen permitido
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  credentials: true,
+}));
+
 app.use(async (ctx, next) => {
   try {
     await next();
@@ -40,10 +50,8 @@ app.use(async (ctx, next) => {
   }
 });
 
-// Set up API routes
-const apiRouter = setupApiRoutes(deps);
-app.use(apiRouter.routes());
-app.use(apiRouter.allowedMethods());
+// Initialize API with all routes (including projections)
+initializeApi(app, deps);
 
 /**
  * Start server

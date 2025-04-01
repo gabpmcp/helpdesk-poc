@@ -274,8 +274,7 @@ const attemptLogin = (supabaseUrl, supabaseAnonKey) => ({ email, password }) =>
     },
     body: JSON.stringify({
       email,
-      password,
-      // grant_type: 'password'
+      password
     })
   }).then((res) =>
     res
