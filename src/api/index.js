@@ -594,23 +594,18 @@ export const setupApiRoutes = (deps) => {
   router.get('/api/zoho/tickets/:id', verifyJwt, withCors(async (ctx) => {
     try {
       const { id } = ctx.params;
-      const result = await zohoProxyService.getTicketById(id);
       
-      if (!result.isOk) {
-        ctx.status = 500;
-        ctx.body = deepFreeze({ 
-          error: result.unwrapError().message || 'Failed to fetch ticket' 
-        });
-        return;
-      }
+      // Fetch ticket details from Zoho via n8n
+      const data = await zohoProxyService.getTicketById(id);
       
       ctx.status = 200;
-      ctx.body = deepFreeze(result.unwrap());
+      ctx.body = deepFreeze(data);
     } catch (error) {
-      console.error('Error proxying ticket detail:', error);
+      console.error(`Error fetching ticket ${ctx.params.ticketId}:`, error);
       ctx.status = 500;
       ctx.body = deepFreeze({ 
-        error: error.message || 'Failed to fetch ticket' 
+        error: error.message || 'Failed to fetch ticket details',
+        source: 'zoho-ticket-detail-api'
       });
     }
   }));
@@ -689,7 +684,145 @@ export const setupApiRoutes = (deps) => {
       });
     }
   }));
-  
+
+  // --- Zoho Ticket API Endpoints ---
+
+  // Get filtered tickets
+  router.get('/api/tickets', withCors(async (ctx) => {
+    try {
+      // Extract user information from JWT
+      const { user } = ctx.state || {};
+      const filters = { ...ctx.query };
+      
+      // Apply role-based filtering if user is available
+      if (user && user.role === 'client') {
+        filters.clientEmail = user.email;
+      }
+      
+      // Fetch tickets from Zoho via n8n
+      const data = await zohoProxyService.getTickets(filters);
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze(data);
+    } catch (error) {
+      console.error('Error fetching tickets:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch tickets',
+        source: 'zoho-tickets-api'
+      });
+    }
+  }));
+
+  // Get ticket details
+  router.get('/api/tickets/:ticketId', withCors(async (ctx) => {
+    try {
+      const { ticketId } = ctx.params;
+      
+      // Fetch ticket details from Zoho via n8n
+      const data = await zohoProxyService.getTicketById(ticketId);
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze(data);
+    } catch (error) {
+      console.error(`Error fetching ticket ${ctx.params.ticketId}:`, error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch ticket details',
+        source: 'zoho-ticket-detail-api'
+      });
+    }
+  }));
+
+  // Create a new ticket
+  router.post('/api/tickets', withCors(async (ctx) => {
+    try {
+      // Extract user information from JWT
+      const { user } = ctx.state || {};
+      
+      // Prepare ticket data with user information
+      const ticketData = {
+        ...ctx.request.body,
+        createdBy: user ? user.email : 'anonymous'
+      };
+      
+      // Create ticket via Zoho n8n workflow
+      const data = await zohoProxyService.createTicket(ticketData);
+      
+      ctx.status = 201;
+      ctx.body = deepFreeze(data);
+    } catch (error) {
+      console.error('Error creating ticket:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to create ticket',
+        source: 'zoho-create-ticket-api'
+      });
+    }
+  }));
+
+  // Update ticket status
+  router.patch('/api/tickets/:ticketId', withCors(async (ctx) => {
+    try {
+      const { ticketId } = ctx.params;
+      const { status } = ctx.request.body;
+      
+      // Validate status
+      const validStatuses = ['Open', 'In Progress', 'On Hold', 'Closed'];
+      if (!status || !validStatuses.includes(status)) {
+        ctx.status = 400;
+        ctx.body = deepFreeze({
+          error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`,
+          source: 'zoho-update-ticket-api'
+        });
+        return;
+      }
+      
+      // Update status via Zoho n8n workflow
+      const data = await zohoProxyService.updateTicketStatus(ticketId, status);
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze(data);
+    } catch (error) {
+      console.error(`Error updating ticket ${ctx.params.ticketId}:`, error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to update ticket',
+        source: 'zoho-update-ticket-api'
+      });
+    }
+  }));
+
+  // Add comment to ticket
+  router.post('/api/tickets/:ticketId/comments', withCors(async (ctx) => {
+    try {
+      const { ticketId } = ctx.params;
+      
+      // Extract user information from JWT
+      const { user } = ctx.state || {};
+      
+      // Prepare comment data with user information
+      const commentData = {
+        ...ctx.request.body,
+        author: user ? user.email : 'anonymous',
+        timestamp: new Date().toISOString()
+      };
+      
+      // Add comment via Zoho n8n workflow
+      const data = await zohoProxyService.addTicketComment(ticketId, commentData);
+      
+      ctx.status = 201;
+      ctx.body = deepFreeze(data);
+    } catch (error) {
+      console.error(`Error adding comment to ticket ${ctx.params.ticketId}:`, error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to add comment',
+        source: 'zoho-add-comment-api'
+      });
+    }
+  }));
+
   // --- State reconstruction endpoint ---
   router.get('/state/:email', verifyJwt, async (ctx) => {
     const { email } = ctx.params;

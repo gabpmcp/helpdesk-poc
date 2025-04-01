@@ -141,24 +141,78 @@ const buildQueryString = (filters) => {
 };
 
 /**
- * Pure function to get tickets with filters
- * @param {Object} filters - Query filters
+ * Pure function to get tickets with filtering options
+ * @param {Object} filters - Query filters (e.g., status, client email)
  * @returns {Promise<Object>} - Promise with tickets data
  */
 export const getTickets = (filters = {}) => {
-  const queryString = buildQueryString(filters);
-  const endpoint = `/api/v1/tickets${queryString}`;
+  // Build query parameters
+  const queryParams = new URLSearchParams();
   
-  return proxyZohoRequest(endpoint);
+  Object.entries(filters)
+    .filter(([_, value]) => value !== undefined && value !== null)
+    .forEach(([key, value]) => queryParams.append(key, String(value)));
+  
+  const queryString = queryParams.toString();
+  
+  return fetchFromN8N(`/webhook/zoho/tickets${queryString ? `?${queryString}` : ''}`);
 };
 
 /**
- * Pure function to get a ticket by ID
- * @param {String} id - Ticket ID
- * @returns {Promise<Object>} - Promise with ticket data
+ * Pure function to get a ticket by ID with full details
+ * @param {String} ticketId - Ticket ID
+ * @returns {Promise<Object>} - Promise with ticket details
  */
-export const getTicketById = (id) => 
-  proxyZohoRequest(`/api/v1/tickets/${id}`);
+export const getTicketById = (ticketId) => {
+  return fetchFromN8N(`/webhook/zoho/ticket/${ticketId}`);
+};
+
+/**
+ * Pure function to create a new ticket
+ * @param {Object} ticketData - Ticket data (subject, description, etc.)
+ * @returns {Promise<Object>} - Promise with created ticket data
+ */
+export const createTicket = (ticketData) => {
+  return fetchFromN8N('/webhook/zoho/create-ticket', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(ticketData)
+  });
+};
+
+/**
+ * Pure function to update a ticket's status
+ * @param {String} ticketId - Ticket ID
+ * @param {String} status - New status (Open, In Progress, On Hold, Closed)
+ * @returns {Promise<Object>} - Promise with updated ticket data
+ */
+export const updateTicketStatus = (ticketId, status) => {
+  return fetchFromN8N(`/webhook/zoho/update-ticket/${ticketId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ status })
+  });
+};
+
+/**
+ * Pure function to add a comment to a ticket
+ * @param {String} ticketId - Ticket ID
+ * @param {Object} commentData - Comment data (message, attachments, etc.)
+ * @returns {Promise<Object>} - Promise with comment data
+ */
+export const addTicketComment = (ticketId, commentData) => {
+  return fetchFromN8N(`/webhook/zoho/add-comment/${ticketId}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(commentData)
+  });
+};
 
 /**
  * Pure function to get categories
@@ -168,20 +222,9 @@ export const getCategories = () =>
   proxyZohoRequest('/api/v1/categories');
 
 /**
- * Pure function to create a ticket
- * @param {Object} ticketData - Ticket data
- * @returns {Promise<Object>} - Promise with created ticket data
- */
-export const createTicket = (ticketData) => 
-  proxyZohoRequest('/api/v1/tickets', {
-    method: 'POST',
-    body: JSON.stringify(ticketData)
-  });
-
-/**
  * Pure function to add a comment to a ticket
  * @param {String} ticketId - Ticket ID
- * @param {Object} commentData - Comment data
+ * @param {Object} commentData - Comment data (message, attachments, etc.)
  * @returns {Promise<Object>} - Promise with comment data
  */
 export const addComment = (ticketId, commentData) => 
