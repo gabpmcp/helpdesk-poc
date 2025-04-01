@@ -574,13 +574,14 @@ export const setupApiRoutes = (deps) => {
   }));
   
   // Tickets Endpoint
-  router.get('/api/zoho/tickets', verifyJwt, withCors(async (ctx) => {
+  router.get('/api/zoho/tickets', withCors(async (ctx) => {
     try {
+      // Enfoque declarativo sin usar Result
       const filters = ctx.query;
-      const data = await zohoProxyService.getTickets(filters);
+      const tickets = await zohoProxyService.getTickets(filters);
       
       ctx.status = 200;
-      ctx.body = deepFreeze(data);
+      ctx.body = deepFreeze(tickets);
     } catch (error) {
       console.error('Error proxying tickets:', error);
       ctx.status = 500;
@@ -591,17 +592,16 @@ export const setupApiRoutes = (deps) => {
   }));
 
   // Ticket Detail Endpoint
-  router.get('/api/zoho/tickets/:id', verifyJwt, withCors(async (ctx) => {
+  router.get('/api/zoho/tickets/:id', withCors(async (ctx) => {
     try {
+      // Enfoque declarativo sin usar Result
       const { id } = ctx.params;
-      
-      // Fetch ticket details from Zoho via n8n
-      const data = await zohoProxyService.getTicketById(id);
+      const ticket = await zohoProxyService.getTicketById(id);
       
       ctx.status = 200;
-      ctx.body = deepFreeze(data);
+      ctx.body = deepFreeze(ticket);
     } catch (error) {
-      console.error(`Error fetching ticket ${ctx.params.ticketId}:`, error);
+      console.error(`Error fetching ticket ${ctx.params.id}:`, error);
       ctx.status = 500;
       ctx.body = deepFreeze({ 
         error: error.message || 'Failed to fetch ticket details',
@@ -611,31 +611,33 @@ export const setupApiRoutes = (deps) => {
   }));
   
   // Categories Endpoint
-  router.get('/api/zoho/categories', verifyJwt, withCors(async (ctx) => {
+  router.get('/api/zoho/categories', withCors(async (ctx) => {
     try {
-      const result = await zohoProxyService.getCategories();
+      console.log('🔍 Iniciando solicitud de categorías');
       
-      if (!result.isOk) {
-        ctx.status = 500;
-        ctx.body = deepFreeze({ 
-          error: result.unwrapError().message || 'Failed to fetch categories' 
-        });
-        return;
-      }
+      // Enfoque declarativo sin usar Result
+      console.log('🔄 Llamando a zohoProxyService.getCategories()');
+      const categories = await zohoProxyService.getCategories();
       
+      console.log('✅ Categorías obtenidas con éxito:', JSON.stringify(categories).substring(0, 200));
       ctx.status = 200;
-      ctx.body = deepFreeze(result.unwrap());
+      ctx.body = deepFreeze(categories);
     } catch (error) {
-      console.error('Error proxying categories:', error);
+      console.error('❌ Error detallado al obtener categorías:', error);
+      console.error('❌ Stack trace:', error.stack);
+      
+      // Respuesta de error más descriptiva para el cliente
       ctx.status = 500;
       ctx.body = deepFreeze({ 
-        error: error.message || 'Failed to fetch categories' 
+        error: error.message || 'Failed to fetch categories',
+        details: error.stack,
+        timestamp: new Date().toISOString()
       });
     }
   }));
   
   // Create Ticket Endpoint
-  router.post('/api/zoho/tickets', verifyJwt, withCors(async (ctx) => {
+  router.post('/api/zoho/tickets', withCors(async (ctx) => {
     try {
       const ticketData = ctx.request.body;
       const result = await zohoProxyService.createTicket(ticketData);
@@ -660,7 +662,7 @@ export const setupApiRoutes = (deps) => {
   }));
   
   // Add Comment Endpoint
-  router.post('/api/zoho/tickets/:id/comments', verifyJwt, withCors(async (ctx) => {
+  router.post('/api/zoho/tickets/:id/comments', withCors(async (ctx) => {
     try {
       const { id } = ctx.params;
       const commentData = ctx.request.body;
