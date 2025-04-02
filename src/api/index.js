@@ -640,23 +640,60 @@ export const setupApiRoutes = (deps) => {
   router.post('/api/zoho/tickets', withCors(async (ctx) => {
     try {
       const ticketData = ctx.request.body;
-      const result = await zohoProxyService.createTicket(ticketData);
+      console.log('📝 Recibida solicitud para crear ticket:', JSON.stringify(ticketData).substring(0, 500));
       
-      if (!result.isOk) {
-        ctx.status = 500;
+      // Validar que tenemos los campos requeridos
+      if (!ticketData.subject) {
+        ctx.status = 400;
         ctx.body = deepFreeze({ 
-          error: result.unwrapError().message || 'Failed to create ticket' 
+          error: 'Subject is required'
         });
         return;
       }
       
+      if (!ticketData.contactId) {
+        ctx.status = 400;
+        ctx.body = deepFreeze({ 
+          error: 'ContactId is required'
+        });
+        return;
+      }
+      
+      if (!ticketData.departmentId) {
+        ctx.status = 400;
+        ctx.body = deepFreeze({ 
+          error: 'DepartmentId is required'
+        });
+        return;
+      }
+      
+      // Intentar crear el ticket
+      console.log('🔄 Enviando datos a zohoProxyService.createTicket()');
+      const result = await zohoProxyService.createTicket(ticketData);
+      console.log('✅ Respuesta del servicio de creación:', JSON.stringify(result).substring(0, 500));
+      
+      if (!result || !result.success) {
+        console.error('❌ Error al crear ticket:', result);
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: (result?.message || result?.error) || 'Failed to create ticket',
+          details: result
+        });
+        return;
+      }
+      
+      // Si la creación fue exitosa, devolver la respuesta
       ctx.status = 201;
-      ctx.body = deepFreeze(result.unwrap());
+      ctx.body = deepFreeze(result);
     } catch (error) {
-      console.error('Error creating ticket:', error);
+      console.error('❌ Error detallado al crear ticket:', error);
+      console.error('❌ Stack trace:', error.stack);
+      
       ctx.status = 500;
       ctx.body = deepFreeze({ 
-        error: error.message || 'Failed to create ticket' 
+        error: error.message || 'Failed to create ticket',
+        details: error.stack,
+        timestamp: new Date().toISOString()
       });
     }
   }));
@@ -683,6 +720,40 @@ export const setupApiRoutes = (deps) => {
       ctx.status = 500;
       ctx.body = deepFreeze({ 
         error: error.message || 'Failed to add comment' 
+      });
+    }
+  }));
+  
+  // Get Contacts Endpoint
+  router.get('/api/zoho/contacts', withCors(async (ctx) => {
+    try {
+      console.log('Fetching Zoho contacts via n8n...');
+      const result = await zohoProxyService.getContacts();
+      
+      console.log('n8n contacts result:', JSON.stringify(result).substring(0, 200));
+      
+      if (!result || !result.success) {
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: (result?.message) || 'Failed to fetch contacts' 
+        });
+        return;
+      }
+      
+      // Usar validContacts que es la propiedad real de la respuesta n8n
+      const contacts = result.validContacts || result.contacts || [];
+      console.log(`Returning ${contacts.length} contacts to frontend`);
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze({
+        success: true,
+        data: contacts
+      });
+    } catch (error) {
+      console.error('Error fetching contacts:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch contacts' 
       });
     }
   }));

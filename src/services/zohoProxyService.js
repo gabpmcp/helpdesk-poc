@@ -12,7 +12,7 @@ const ZOHO_API_TOKEN = process.env.ZOHO_API_TOKEN || 'your-zoho-api-token';
 const ZOHO_ORGANIZATION_ID = process.env.ZOHO_ORGANIZATION_ID || 'your-org-id';
 
 // n8n configuration (should be in environment variables in production)
-const N8N_BASE_URL = process.env.N8N_BASE_URL || 'http://localhost:5678';
+const N8N_BASE_URL = process.env.N8N_BASE_URL || 'http://localhost:5678/webhook/';
 
 // Los webhooks de n8n sin barras iniciales para evitar doble slash cuando se concatenan con N8N_BASE_URL
 const ZOHO_CATEGORIES_WEBHOOK = 'zoho-categories';
@@ -21,6 +21,7 @@ const ZOHO_TICKET_DETAIL_WEBHOOK = 'zoho-ticket-detail';
 const ZOHO_CREATE_TICKET_WEBHOOK = 'zoho-create-ticket';
 const ZOHO_UPDATE_TICKET_WEBHOOK = 'zoho-update-ticket';
 const ZOHO_ADD_COMMENT_WEBHOOK = 'zoho-add-comment';
+const ZOHO_CONTACTS_WEBHOOK = 'zoho-contacts';
 
 // Helper para construir URLs correctamente con o sin slash final en la base URL
 const buildN8nUrl = (basePath, endpoint) => {
@@ -70,23 +71,45 @@ export const fetchFromN8N = (path, options = {}) => {
     ? buildN8nUrl(N8N_BASE_URL, path) 
     : path;
   
+  console.log(`[n8n] Requesting: ${url}`);
+  
+  // Ensure content-type is set correctly for POST requests with a body
+  if (options.method === 'POST' && options.body && !options.headers?.['Content-Type']) {
+    options.headers = {
+      ...options.headers,
+      'Content-Type': 'application/json'
+    };
+  }
+  
   return pipeAsync(
-    () => logMessage(`Fetching data from n8n: ${url} with method ${options.method || 'GET'}`),
-    () => fetch(url, options),
+    () => logMessage(`[n8n] Fetching data from n8n: ${url} with method ${options.method || 'GET'}`),
+    () => {
+      // Log the request body for debugging (limit to avoid huge logs)
+      if (options.body) {
+        const bodyPreview = typeof options.body === 'string' 
+          ? options.body.substring(0, 500) 
+          : JSON.stringify(options.body).substring(0, 500);
+        logMessage(`[n8n] Request body: ${bodyPreview}...`);
+      }
+      console.log(`[n8n] Request URL: ${url}, Request options: ${JSON.stringify(options)}`);
+      return fetch(url, options);
+    },
     (response) => {
+      logMessage(`[n8n] Response status: ${response.status} ${response.statusText}`);
+      
       if (!response.ok) {
-        // Capturar más detalles sobre errores
+        // Capture more error details
         return response.text().then(text => {
           const errorDetails = `Status: ${response.status}, StatusText: ${response.statusText}, Body: ${text}`;
-          logMessage(`Error en la respuesta de n8n: ${errorDetails}`);
-          throw new Error(`Error en la respuesta de n8n: ${errorDetails}`);
+          logMessage(`[n8n] Error response: ${errorDetails}`);
+          throw new Error(`Error in n8n response: ${errorDetails}`);
         });
       }
       return response;
     },
     (response) => response.json(),
     (data) => {
-      logMessage(`Datos recibidos de n8n: ${JSON.stringify(data).substring(0, 200)}...`);
+      logMessage(`[n8n] Data received: ${JSON.stringify(data).substring(0, 200)}...`);
       return deepFreeze(data);
     }
   )();
@@ -193,14 +216,77 @@ export const getCategories = () =>
  * @param {Object} ticketData - Ticket data
  * @returns {Promise<Object>} - Promise with created ticket data
  */
-export const createTicket = (ticketData) => 
-  fetchFromN8N('zoho-create-ticket', {
+export const createTicket = (ticketData) => {
+  // Validar que tengamos al menos los campos requeridos
+  if (!ticketData || !ticketData.subject) {
+    return Promise.reject(new Error('Ticket subject is required'));
+  }
+  
+  // Normalizar los datos para asegurar compatibilidad con Zoho Desk API
+  const normalizedData = {
+    subject: ticketData.subject,
+    description: ticketData.description || '',
+    departmentId: ticketData.departmentId,
+    contactId: ticketData.contactId,
+    category: ticketData.category || '',
+    priority: ticketData.priority || 'medium',
+    status: ticketData.status || 'open',
+    dueDate: ticketData.dueDate,
+    cf: ticketData.cf || {}
+  };
+  
+  console.log('[zohoProxyService] Creating ticket with data:', 
+    JSON.stringify(normalizedData).substring(0, 500));
+  
+  // Llamar al webhook de n8n para crear el ticket
+  return fetchFromN8N(ZOHO_CREATE_TICKET_WEBHOOK, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(ticketData)
+    body: JSON.stringify(normalizedData)
+  }).then(response => {
+    console.log('[zohoProxyService] Respuesta completa de n8n:', 
+      JSON.stringify(response).substring(0, 500));
+    
+    // Verificar que tengamos una respuesta válida
+    if (!response) {
+      console.error('[zohoProxyService] No se recibió respuesta del webhook de n8n');
+      throw new Error('No se recibió respuesta del webhook de n8n');
+    }
+    
+    // Si recibimos un error explícito, lanzarlo
+    if (response.error) {
+      console.error('[zohoProxyService] Error explícito en respuesta:', response.error);
+      throw new Error(response.error);
+    }
+    
+    // Verificar si la respuesta de n8n contiene un ticket
+    if (!response.success) {
+      console.error('[zohoProxyService] La respuesta no indica éxito:', response);
+      throw new Error(response.message || 'No se pudo crear el ticket en Zoho Desk');
+    }
+    
+    // Si no hay un objeto ticket, pero hay success, devolver la respuesta completa
+    if (!response.ticket) {
+      console.warn('[zohoProxyService] Respuesta exitosa pero sin ticket:', response);
+      return response;
+    }
+    
+    console.log('[zohoProxyService] Ticket creado correctamente:', response.ticket.id);
+    return response;
+  }).catch(error => {
+    console.error('[zohoProxyService] Error al crear ticket:', error);
+    console.error('[zohoProxyService] Stack trace:', error.stack);
+    
+    // Reformatear el error para mantener consistencia
+    return {
+      success: false,
+      error: error.message || 'Error desconocido al crear el ticket',
+      timestamp: new Date().toISOString()
+    };
   });
+};
 
 /**
  * Pure function to update a ticket's status
@@ -231,3 +317,10 @@ export const addComment = (ticketId, commentData) =>
     },
     body: JSON.stringify(commentData)
   });
+
+/**
+ * Pure function to get Zoho contacts
+ * @returns {Promise<Object>} - Promise with contacts data
+ */
+export const getContacts = () => 
+  fetchFromN8N(ZOHO_CONTACTS_WEBHOOK);
