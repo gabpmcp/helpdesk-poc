@@ -24,6 +24,7 @@ import {
   ZOHO_CATEGORIES_WEBHOOK
 } from '../services/zohoProxyService.js';
 import { setupProjectionRoutes, setupWebhookRoutes, setupDashboardRoutes, setupZohoApiRoutes } from './projections.js';
+import commentsRouter from './comments.js';
 
 /**
  * JWT secret key (should be in env vars in production)
@@ -1316,6 +1317,9 @@ export const initializeApi = (app, deps = {}) => {
   
   app.use(zohoApiRouter.routes());
   app.use(zohoApiRouter.allowedMethods());
+  
+  app.use(commentsRouter.routes());
+  app.use(commentsRouter.allowedMethods());
   
   // Add webhook-test endpoint for testing n8n webhooks
   const webhookTestRouter = new Router({
