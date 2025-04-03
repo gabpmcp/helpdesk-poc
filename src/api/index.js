@@ -17,6 +17,12 @@ import {
 import { notifyExternal } from '../shell/notifications.js';
 import { Result, tryCatchAsync, deepFreeze } from '../utils/functional.js';
 import * as zohoProxyService from '../services/zohoProxyService.js';
+import { 
+  ZOHO_TICKET_DETAIL_WEBHOOK,
+  ZOHO_CONTACTS_WEBHOOK,
+  ZOHO_ACCOUNTS_WEBHOOK,
+  ZOHO_CATEGORIES_WEBHOOK
+} from '../services/zohoProxyService.js';
 import { setupProjectionRoutes, setupWebhookRoutes, setupDashboardRoutes, setupZohoApiRoutes } from './projections.js';
 
 /**
@@ -596,16 +602,73 @@ export const setupApiRoutes = (deps) => {
     try {
       // Enfoque declarativo sin usar Result
       const { id } = ctx.params;
-      const ticket = await zohoProxyService.getTicketById(id);
+      console.log(`🔍 Fetching ticket details for ID: ${id}`);
+      console.log(`🌐 Using webhook path: ${ZOHO_TICKET_DETAIL_WEBHOOK}?ticketId=${id}`);
       
+      const result = await zohoProxyService.getTicketById(id);
+      
+      console.log('📊 n8n ticket result type:', typeof result);
+      console.log('📊 n8n ticket result shape:', Object.keys(result || {}));
+      console.log('📊 n8n ticket result preview:', JSON.stringify(result).substring(0, 200));
+      
+      // Verificar la estructura de la respuesta
+      if (!result) {
+        console.error('❌ No response received from n8n');
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: 'No response received from n8n'
+        });
+        return;
+      }
+
+      // Preparar la respuesta según la estructura esperada por el frontend
+      let ticketData;
+      
+      // Adaptación para diferentes estructuras de respuesta posibles
+      if (result.ticket) {
+        // Si la respuesta tiene una propiedad 'ticket', usarla directamente
+        ticketData = result.ticket;
+      } else if (result.success && result.data) {
+        // Si tiene estructura success/data (común en APIs RESTful)
+        ticketData = result.data;
+      } else if (result.id) {
+        // Si el resultado ya es el ticket en sí mismo
+        ticketData = result;
+      } else {
+        console.error('❌ Could not extract ticket data from response');
+        ctx.status = 404;
+        ctx.body = deepFreeze({ 
+          error: 'Ticket not found or invalid format',
+          details: 'Could not extract ticket data from n8n response'
+        });
+        return;
+      }
+      
+      // Verificar que tengamos datos mínimos del ticket
+      if (!ticketData.id) {
+        console.error('❌ Invalid ticket data: missing ID');
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: 'Invalid ticket data returned from n8n'
+        });
+        return;
+      }
+      
+      console.log('✅ Ticket details retrieved successfully');
+      
+      // Devolver los datos del ticket en el formato esperado por el frontend
       ctx.status = 200;
-      ctx.body = deepFreeze(ticket);
+      ctx.body = deepFreeze({
+        data: ticketData
+      });
     } catch (error) {
-      console.error(`Error fetching ticket ${ctx.params.id}:`, error);
+      console.error(`❌ Error fetching ticket ${ctx.params.id}:`, error);
+      console.error('❌ Stack trace:', error.stack);
       ctx.status = 500;
       ctx.body = deepFreeze({ 
         error: error.message || 'Failed to fetch ticket details',
-        source: 'zoho-ticket-detail-api'
+        source: 'zoho-ticket-detail-api',
+        stack: error.stack
       });
     }
   }));
@@ -630,6 +693,95 @@ export const setupApiRoutes = (deps) => {
       ctx.status = 500;
       ctx.body = deepFreeze({ 
         error: error.message || 'Failed to fetch categories',
+        details: error.stack,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }));
+  
+  // Get Zoho Accounts Endpoint
+  router.get('/api/zoho/accounts', withCors(async (ctx) => {
+    try {
+      console.log('🔍 Fetching Zoho accounts via n8n...');
+      console.log('🌐 Using N8N_BASE_URL:', process.env.N8N_BASE_URL || 'No value set, using default');
+      const result = await zohoProxyService.getAccounts();
+      
+      console.log('📊 n8n accounts result type:', typeof result);
+      console.log('📊 n8n accounts result shape:', Object.keys(result || {})); 
+      console.log('📊 n8n accounts result preview:', JSON.stringify(result).substring(0, 200));
+      
+      if (!result || !result.success) {
+        console.error('❌ Error in n8n response for accounts:', result);
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: (result?.message) || 'Failed to fetch accounts',
+          details: 'n8n response did not include success: true'  
+        });
+        return;
+      }
+      
+      // Usar validAccounts que es la propiedad real de la respuesta n8n
+      const accounts = result.validAccounts || result.accounts || [];
+      console.log(`✅ Returning ${accounts.length} accounts to frontend`);
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze({
+        success: true,
+        data: accounts
+      });
+    } catch (error) {
+      console.error('❌ Error fetching accounts:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch accounts',
+        details: error.stack,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }));
+  
+  // Get Knowledge Base Articles Endpoint
+  router.get('/api/zoho/kb-articles', withCors(async (ctx) => {
+    try {
+      console.log('Fetching knowledge base articles via n8n...');
+      
+      // Extraer opciones de la query
+      const { category, search, limit } = ctx.query;
+      const options = {};
+      
+      if (category) options.category = category;
+      if (search) options.search = search;
+      if (limit) options.limit = parseInt(limit, 10);
+      
+      console.log('KB article options:', options);
+      
+      // Obtener artículos con opciones
+      const result = await zohoProxyService.getKbArticles(options);
+      
+      console.log('n8n kb articles result:', JSON.stringify(result).substring(0, 200));
+      
+      if (!result || !result.success) {
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: (result?.message) || 'Failed to fetch KB articles' 
+        });
+        return;
+      }
+      
+      // Usar articles que es la propiedad real de la respuesta n8n
+      const articles = result.articles || [];
+      console.log(`Returning ${articles.length} KB articles to frontend`);
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze({
+        success: true,
+        data: articles
+      });
+    } catch (error) {
+      console.error('Error fetching KB articles:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch KB articles',
         details: error.stack,
         timestamp: new Date().toISOString()
       });
@@ -727,22 +879,27 @@ export const setupApiRoutes = (deps) => {
   // Get Contacts Endpoint
   router.get('/api/zoho/contacts', withCors(async (ctx) => {
     try {
-      console.log('Fetching Zoho contacts via n8n...');
+      console.log('🔍 Fetching Zoho contacts via n8n...');
+      console.log('🌐 Using N8N_BASE_URL:', process.env.N8N_BASE_URL || 'No value set, using default');
       const result = await zohoProxyService.getContacts();
       
-      console.log('n8n contacts result:', JSON.stringify(result).substring(0, 200));
+      console.log('📊 n8n contacts result type:', typeof result);
+      console.log('📊 n8n contacts result shape:', Object.keys(result || {})); 
+      console.log('📊 n8n contacts result preview:', JSON.stringify(result).substring(0, 200));
       
       if (!result || !result.success) {
+        console.error('❌ Error in n8n response for contacts:', result);
         ctx.status = 500;
         ctx.body = deepFreeze({ 
-          error: (result?.message) || 'Failed to fetch contacts' 
+          error: (result?.message) || 'Failed to fetch contacts',
+          details: 'n8n response did not include success: true' 
         });
         return;
       }
       
       // Usar validContacts que es la propiedad real de la respuesta n8n
       const contacts = result.validContacts || result.contacts || [];
-      console.log(`Returning ${contacts.length} contacts to frontend`);
+      console.log(`✅ Returning ${contacts.length} contacts to frontend`);
       
       ctx.status = 200;
       ctx.body = deepFreeze({
@@ -750,10 +907,11 @@ export const setupApiRoutes = (deps) => {
         data: contacts
       });
     } catch (error) {
-      console.error('Error fetching contacts:', error);
+      console.error('❌ Error fetching contacts:', error);
       ctx.status = 500;
       ctx.body = deepFreeze({ 
-        error: error.message || 'Failed to fetch contacts' 
+        error: error.message || 'Failed to fetch contacts',
+        stack: error.stack 
       });
     }
   }));

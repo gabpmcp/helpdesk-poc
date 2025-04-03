@@ -12,16 +12,17 @@ const ZOHO_API_TOKEN = process.env.ZOHO_API_TOKEN || 'your-zoho-api-token';
 const ZOHO_ORGANIZATION_ID = process.env.ZOHO_ORGANIZATION_ID || 'your-org-id';
 
 // n8n configuration (should be in environment variables in production)
-const N8N_BASE_URL = process.env.N8N_BASE_URL || 'http://localhost:5678/webhook/';
+const N8N_BASE_URL = process.env.N8N_BASE_URL || 'https://n8n.advancio.io/webhook/';
 
 // Los webhooks de n8n sin barras iniciales para evitar doble slash cuando se concatenan con N8N_BASE_URL
-const ZOHO_CATEGORIES_WEBHOOK = 'zoho-categories';
-const ZOHO_TICKETS_WEBHOOK = 'zoho-tickets';
-const ZOHO_TICKET_DETAIL_WEBHOOK = 'zoho-ticket-detail';
-const ZOHO_CREATE_TICKET_WEBHOOK = 'zoho-create-ticket';
-const ZOHO_UPDATE_TICKET_WEBHOOK = 'zoho-update-ticket';
-const ZOHO_ADD_COMMENT_WEBHOOK = 'zoho-add-comment';
-const ZOHO_CONTACTS_WEBHOOK = 'zoho-contacts';
+export const ZOHO_CATEGORIES_WEBHOOK = 'zoho-categories';
+export const ZOHO_TICKETS_WEBHOOK = 'zoho-tickets';
+export const ZOHO_TICKET_DETAIL_WEBHOOK = 'zoho-ticket-detail';
+export const ZOHO_CREATE_TICKET_WEBHOOK = 'zoho-create-ticket';
+export const ZOHO_UPDATE_TICKET_WEBHOOK = 'zoho-update-ticket';
+export const ZOHO_ADD_COMMENT_WEBHOOK = 'zoho-add-comment';
+export const ZOHO_CONTACTS_WEBHOOK = 'zoho-contacts';
+export const ZOHO_ACCOUNTS_WEBHOOK = 'zoho-accounts';
 
 // Helper para construir URLs correctamente con o sin slash final en la base URL
 const buildN8nUrl = (basePath, endpoint) => {
@@ -31,6 +32,11 @@ const buildN8nUrl = (basePath, endpoint) => {
   }
   return `${basePath}/${endpoint}`;
 };
+
+// Debug helper para mostrar URLs n8n
+console.log(' N8N URL base configurada:', N8N_BASE_URL);
+console.log(' URL ejemplo para contactos:', buildN8nUrl(N8N_BASE_URL, ZOHO_CONTACTS_WEBHOOK));
+console.log(' URL ejemplo para cuentas:', buildN8nUrl(N8N_BASE_URL, ZOHO_ACCOUNTS_WEBHOOK));
 
 /**
  * Pure function to create headers for Zoho API requests
@@ -202,7 +208,7 @@ export const getTickets = (filters = {}) => {
  * @returns {Promise<Object>} - Promise with ticket data
  */
 export const getTicketById = (id) => 
-  fetchFromN8N(`zoho-ticket-detail/${id}`);
+  fetchFromN8N(`${ZOHO_TICKET_DETAIL_WEBHOOK}?ticketId=${id}`);
 
 /**
  * Pure function to get categories
@@ -228,6 +234,7 @@ export const createTicket = (ticketData) => {
     description: ticketData.description || '',
     departmentId: ticketData.departmentId,
     contactId: ticketData.contactId,
+    accountId: ticketData.accountId,
     category: ticketData.category || '',
     priority: ticketData.priority || 'medium',
     status: ticketData.status || 'open',
@@ -324,3 +331,28 @@ export const addComment = (ticketId, commentData) =>
  */
 export const getContacts = () => 
   fetchFromN8N(ZOHO_CONTACTS_WEBHOOK);
+
+/**
+ * Pure function to get Zoho accounts
+ * @returns {Promise<Object>} - Promise with accounts data
+ */
+export const getAccounts = () =>
+  fetchFromN8N(ZOHO_ACCOUNTS_WEBHOOK);
+
+/**
+ * Pure function to get Zoho Knowledge Base articles
+ * @param {Object} options - Query options (category, search, etc.)
+ * @returns {Promise<Object>} - Promise with KB articles data
+ */
+export const getKbArticles = (options = {}) => {
+  // Build query string if options provided
+  const queryParams = new URLSearchParams();
+  Object.entries(options)
+    .filter(([_, value]) => value !== undefined && value !== null && value !== '')
+    .forEach(([key, value]) => queryParams.append(key, String(value)));
+  
+  const queryString = queryParams.toString();
+  const endpoint = `/api/zoho/kb-articles${queryString ? `?${queryString}` : ''}`;
+  
+  return fetchFromN8N(endpoint);
+};

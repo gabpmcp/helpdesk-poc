@@ -4,9 +4,11 @@
  */
 import Koa from 'koa';
 import cors from '@koa/cors';
+import http from 'http';
 import { initializeApi } from './api/index.js';
 import { supabaseClient, supabaseAuth, config } from './shell/config.js';
 import n8nClient from './shell/n8nClient.js';
+import { initializeWebSocketServer } from './ws/index.js';
 
 /**
  * Initialize Koa application
@@ -54,11 +56,22 @@ app.use(async (ctx, next) => {
 initializeApi(app, deps);
 
 /**
+ * Create HTTP server to attach WebSockets
+ */
+const server = http.createServer(app.callback());
+
+/**
+ * Initialize WebSocket server
+ */
+initializeWebSocketServer(server);
+
+/**
  * Start server
  */
-app.listen(config.PORT, () => {
+server.listen(config.PORT, () => {
   console.log(`Server running on port ${config.PORT}`);
   console.log(`API endpoints:`);
   console.log(`- POST /api/commands - Central command endpoint`);
   console.log(`- GET /api/state/:userId - State reconstruction endpoint`);
+  console.log(`- WS /ws/tickets/:ticketId - WebSocket chat for tickets`);
 });

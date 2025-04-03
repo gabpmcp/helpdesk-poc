@@ -1,0 +1,140 @@
+{
+  "name": "Zoho Ticket Detail Webhook",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "zoho-ticket-detail/:ticketId",
+        "options": {
+          "responseMode": "responseNode"
+        }
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraer el ID del ticket de los parámetros del webhook\nconst ticketId = $node[\"Webhook\"].json.params.ticketId;\n\nif (!ticketId) {\n  return {\n    json: {\n      success: false,\n      error: \"No se proporcionó ID de ticket\",\n      message: \"El ID del ticket es obligatorio\"\n    }\n  };\n}\n\n// Devolver el ID del ticket para la siguiente operación\nreturn {\n  json: {\n    ticketId: ticketId\n  }\n};"
+      },
+      "name": "Extract Ticket ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericCredentialType": "zohoOAuth2Api",
+        "resource": "ticket",
+        "operation": "get",
+        "id": "={{ $json.ticketId }}",
+        "options": {}
+      },
+      "name": "Zoho Desk",
+      "type": "n8n-nodes-base.zohoDesk",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "zohoOAuth2Api": {
+          "id": "1",
+          "name": "Zoho OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verificar si hay datos del ticket\nif (!$input.item.json || Object.keys($input.item.json).length === 0) {\n  return {\n    json: {\n      success: false,\n      error: \"Ticket no encontrado\",\n      message: `No se pudo encontrar el ticket con ID ${$node[\"Extract Ticket ID\"].json.ticketId}`\n    }\n  };\n}\n\n// Transformar el ticket para el formato esperado por el frontend\nconst ticket = $input.item.json;\n\n// Estructura de ticket transformado según necesidades del frontend\nconst transformedTicket = {\n  id: ticket.id,\n  ticketNumber: ticket.ticketNumber,\n  subject: ticket.subject,\n  status: ticket.status,\n  statusType: ticket.statusType,\n  priority: ticket.priority,\n  channel: ticket.channel,\n  classification: ticket.classification,\n  language: ticket.language,\n  departmentId: ticket.departmentId,\n  departmentName: ticket.departmentName,\n  contactId: ticket.contactId,\n  contactName: ticket.contactName,\n  accountId: ticket.accountId,\n  accountName: ticket.accountName,\n  description: ticket.description,\n  dueDate: ticket.dueDate,\n  createdTime: ticket.createdTime,\n  modifiedTime: ticket.modifiedTime,\n  closedTime: ticket.closedTime,\n  timeEntryCount: ticket.timeEntryCount,\n  isSpam: ticket.isSpam,\n  isDeleted: ticket.isDeleted,\n  isTrashed: ticket.isTrashed,\n  assigneeId: ticket.assigneeId,\n  teamId: ticket.teamId,\n  productId: ticket.productId,\n  category: ticket.category,\n  subCategory: ticket.subCategory,\n  // Transformar los campos personalizados (cf) si es necesario\n  cf: ticket.cf || {}\n};\n\n// Añadir timestamps para facilitar manejo en el frontend inmutable\nif (ticket.createdTime) {\n  transformedTicket.createdTimestamp = new Date(ticket.createdTime).getTime();\n}\n\nif (ticket.modifiedTime) {\n  transformedTicket.lastUpdatedTimestamp = new Date(ticket.modifiedTime).getTime();\n}\n\n// Añadir estructura de respuesta estándar\nreturn {\n  json: {\n    success: true,\n    ticket: transformedTicket,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "name": "HTTP Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Ticket ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Ticket ID": {
+      "main": [
+        [
+          {
+            "node": "Zoho Desk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho Desk": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "HTTP Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    "zoho",
+    "helpdesk",
+    "ticket-detail"
+  ],
+  "createdAt": "2025-04-02T23:20:00.000Z",
+  "updatedAt": "2025-04-02T23:20:00.000Z",
+  "versionId": "123e4567-e89b-12d3-a456-426614174000"
+}
