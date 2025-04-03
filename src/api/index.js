@@ -673,6 +673,136 @@ export const setupApiRoutes = (deps) => {
     }
   }));
   
+  // Get Ticket Comments Endpoint
+  router.get('/api/zoho/tickets/:id/comments', withCors(async (ctx) => {
+    try {
+      const { id } = ctx.params;
+      console.log(`🔍 Fetching comments for ticket ID: ${id}`);
+      
+      const result = await zohoProxyService.getTicketComments(id);
+      
+      console.log('📊 Comments result type:', typeof result);
+      console.log('📊 Comments result shape:', Object.keys(result || {}));
+      
+      // Verificar la respuesta
+      if (!result || !result.success) {
+        console.error('❌ Error in n8n response for comments:', result);
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: 'Invalid response from n8n for ticket comments'
+        });
+        return;
+      }
+      
+      const comments = result.comments || [];
+      console.log(`✅ Retrieved ${comments.length} comments for ticket ${id}`);
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze({
+        success: true,
+        ticketId: id,
+        comments,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error(`❌ Error fetching comments for ticket ${ctx.params.id}:`, error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch ticket comments',
+        stack: error.stack
+      });
+    }
+  }));
+  
+  // Add Comment to Ticket Endpoint
+  router.post('/api/zoho/tickets/:id/comments', withCors(async (ctx) => {
+    try {
+      const { id } = ctx.params;
+      const commentData = ctx.request.body;
+      
+      console.log(`🔍 Adding comment to ticket ID: ${id}`);
+      
+      if (!commentData || !commentData.comment) {
+        ctx.status = 400;
+        ctx.body = deepFreeze({
+          error: 'Comment content is required'
+        });
+        return;
+      }
+      
+      const result = await zohoProxyService.addComment(id, commentData);
+      
+      console.log('📊 Add comment result:', JSON.stringify(result).substring(0, 200));
+      
+      // Verificar la respuesta
+      if (!result || !result.success) {
+        console.error('❌ Error in n8n response for adding comment:', result);
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: 'Failed to add comment to ticket'
+        });
+        return;
+      }
+      
+      ctx.status = 201; // Created
+      ctx.body = deepFreeze(result);
+    } catch (error) {
+      console.error(`❌ Error adding comment to ticket ${ctx.params.id}:`, error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to add comment to ticket',
+        stack: error.stack
+      });
+    }
+  }));
+  
+  // Filtered Tickets Endpoint
+  router.get('/api/zoho/tickets', withCors(async (ctx) => {
+    try {
+      console.log('🔍 Fetching filtered tickets');
+      
+      // Extraer los filtros de la query string
+      const { status, priority, departmentId, limit, from } = ctx.query;
+      
+      // Crear objeto de filtros con valores válidos
+      const filters = {};
+      if (status) filters.status = status;
+      if (priority) filters.priority = priority;
+      if (departmentId) filters.departmentId = departmentId;
+      
+      // Valores numéricos para paginación
+      const limitNum = limit ? parseInt(limit, 10) : 50;
+      const fromNum = from ? parseInt(from, 10) : 0;
+      
+      console.log(`🔍 Filters: ${JSON.stringify(filters)}, Limit: ${limitNum}, From: ${fromNum}`);
+      
+      const result = await zohoProxyService.getFilteredTickets(filters, limitNum, fromNum);
+      
+      console.log('📊 Filtered tickets result type:', typeof result);
+      console.log('📊 Filtered tickets count:', result?.tickets?.length || 0);
+      
+      // Verificar la respuesta
+      if (!result || !result.success) {
+        console.error('❌ Error in n8n response for filtered tickets:', result);
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: 'Invalid response from n8n for filtered tickets'
+        });
+        return;
+      }
+      
+      ctx.status = 200;
+      ctx.body = deepFreeze(result);
+    } catch (error) {
+      console.error('❌ Error fetching filtered tickets:', error);
+      ctx.status = 500;
+      ctx.body = deepFreeze({ 
+        error: error.message || 'Failed to fetch filtered tickets',
+        stack: error.stack
+      });
+    }
+  }));
+
   // Categories Endpoint
   router.get('/api/zoho/categories', withCors(async (ctx) => {
     try {
@@ -715,7 +845,7 @@ export const setupApiRoutes = (deps) => {
         ctx.status = 500;
         ctx.body = deepFreeze({ 
           error: (result?.message) || 'Failed to fetch accounts',
-          details: 'n8n response did not include success: true'  
+          details: 'n8n response did not include success: true' 
         });
         return;
       }

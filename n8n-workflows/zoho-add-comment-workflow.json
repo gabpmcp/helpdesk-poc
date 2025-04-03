@@ -1,0 +1,142 @@
+{
+  "name": "Zoho Add Comment Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "zoho-add-comment",
+        "options": {
+          "responseMode": "responseNode"
+        }
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraer información del cuerpo de la solicitud\nconst inputData = $node[\"Webhook\"].json.body;\n\nif (!inputData || !inputData.ticketId || !inputData.comment) {\n  return {\n    json: {\n      success: false,\n      error: \"Missing required fields: ticketId and comment\"\n    }\n  };\n}\n\nreturn {\n  json: {\n    ticketId: inputData.ticketId,\n    comment: inputData.comment,\n    // Incluir información del autor si está disponible\n    author: inputData.author || \"Customer\",\n    isPublic: inputData.isPublic !== false\n  }\n};"
+      },
+      "name": "Process Request Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericCredentialType": "zohoOAuth2Api",
+        "resource": "comment",
+        "operation": "create",
+        "ticketId": "={{ $json.ticketId }}",
+        "contentType": "html",
+        "isPublic": "={{ $json.isPublic }}",
+        "content": "={{ $json.comment }}"
+      },
+      "name": "Zoho Desk",
+      "type": "n8n-nodes-base.zohoDesk",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "zohoOAuth2Api": {
+          "id": "1",
+          "name": "Zoho OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transformar la respuesta de Zoho Desk para el frontend\nconst zohoResponse = $input.item.json;\nconst timestamp = new Date().toISOString();\n\n// Verificar si hay un error en la respuesta\nif (!zohoResponse || !zohoResponse.id) {\n  return {\n    json: {\n      success: false,\n      error: \"Failed to add comment to Zoho Desk\",\n      ticketId: $node[\"Process Request Data\"].json.ticketId\n    }\n  };\n}\n\n// Formato para la respuesta del frontend\nreturn {\n  json: {\n    success: true,\n    ticketId: $node[\"Process Request Data\"].json.ticketId,\n    commentId: zohoResponse.id,\n    content: zohoResponse.content || $node[\"Process Request Data\"].json.comment,\n    author: zohoResponse.createdBy?.name || $node[\"Process Request Data\"].json.author || \"Customer\",\n    createdTime: zohoResponse.createdTime || timestamp,\n    createdTimestamp: zohoResponse.createdTime ? new Date(zohoResponse.createdTime).getTime() : new Date(timestamp).getTime(),\n    isPublic: zohoResponse.isPublic !== false\n  }\n};"
+      },
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "name": "HTTP Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Process Request Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Request Data": {
+      "main": [
+        [
+          {
+            "node": "Zoho Desk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho Desk": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "HTTP Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    "zoho",
+    "helpdesk",
+    "comments"
+  ],
+  "createdAt": "2025-04-03T16:52:00.000Z",
+  "updatedAt": "2025-04-03T16:52:00.000Z",
+  "versionId": "123e4567-e89b-12d3-a456-426614174001"
+}

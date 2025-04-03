@@ -1,0 +1,158 @@
+{
+  "name": "Zoho Get Tickets Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "zoho-tickets",
+        "options": {
+          "responseMode": "responseNode"
+        }
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraer los filtros de la solicitud (si existen)\nconst inputData = $node[\"Webhook\"].json;\nconst queryParams = inputData.query || {};\n\n// Preparar los filtros a enviar a Zoho\nconst filters = {};\n\n// Status filter (Zoho requiere el formato exacto)\nif (queryParams.status) {\n  filters.status = queryParams.status; // ej. 'Open', 'Closed', etc.\n}\n\n// Priority filter\nif (queryParams.priority) {\n  filters.priority = queryParams.priority; // ej. 'High', 'Low', etc.\n}\n\n// Category/department filter\nif (queryParams.departmentId) {\n  filters.departmentId = queryParams.departmentId;\n}\n\n// Límite y offset para paginación\nconst limit = queryParams.limit || 50;\nconst from = queryParams.from || 0;\n\nreturn {\n  json: {\n    filters,\n    limit,\n    from\n  }\n};"
+      },
+      "name": "Process Filters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericCredentialType": "zohoOAuth2Api",
+        "resource": "ticket",
+        "operation": "getAll",
+        "departmentId": "={{ $json.filters.departmentId }}",
+        "limit": "={{ $json.limit }}",
+        "additionalOptions": {
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "status",
+                "value": "={{ $json.filters.status }}"
+              },
+              {
+                "name": "priority",
+                "value": "={{ $json.filters.priority }}"
+              },
+              {
+                "name": "from",
+                "value": "={{ $json.from }}"
+              }
+            ]
+          }
+        }
+      },
+      "name": "Zoho Desk",
+      "type": "n8n-nodes-base.zohoDesk",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "zohoOAuth2Api": {
+          "id": "1",
+          "name": "Zoho OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transformar la respuesta de Zoho Desk para el frontend\nconst zohoData = $input.item.json;\n\n// Add timestamp for when this data was fetched\nconst timestamp = new Date().toISOString();\n\n// Extract tickets from the Zoho response\nconst tickets = Array.isArray(zohoData) ? zohoData : (zohoData.data || []);\n\n// Transform the tickets for the frontend\nconst transformedTickets = tickets.map(ticket => ({\n  id: ticket.id,\n  ticketNumber: ticket.ticketNumber,\n  subject: ticket.subject,\n  status: ticket.status,\n  priority: ticket.priority,\n  departmentId: ticket.departmentId,\n  departmentName: ticket.departmentName,\n  contactId: ticket.contactId,\n  contactName: ticket.contactName,\n  accountId: ticket.accountId,\n  accountName: ticket.accountName,\n  description: ticket.description,\n  createdTime: ticket.createdTime,\n  modifiedTime: ticket.modifiedTime,\n  dueDate: ticket.dueDate,\n  category: ticket.category,\n  // Timestamps para ordenamiento y filtrado\n  createdTimestamp: ticket.createdTime ? new Date(ticket.createdTime).getTime() : 0,\n  lastUpdatedTimestamp: ticket.modifiedTime ? new Date(ticket.modifiedTime).getTime() : 0\n}));\n\n// Paginación y metadata\nconst meta = {\n  from: zohoData.from || $node[\"Process Filters\"].json.from || 0,\n  limit: zohoData.limit || $node[\"Process Filters\"].json.limit || 50,\n  total: zohoData.count || transformedTickets.length || 0\n};\n\n// Return the formatted response\nreturn {\n  json: {\n    success: true,\n    tickets: transformedTickets,\n    timestamp,\n    meta\n  }\n};"
+      },
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "name": "HTTP Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Process Filters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Filters": {
+      "main": [
+        [
+          {
+            "node": "Zoho Desk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho Desk": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "HTTP Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    "zoho",
+    "helpdesk",
+    "tickets"
+  ],
+  "createdAt": "2025-04-03T16:54:00.000Z",
+  "updatedAt": "2025-04-03T16:54:00.000Z",
+  "versionId": "123e4567-e89b-12d3-a456-426614174002"
+}

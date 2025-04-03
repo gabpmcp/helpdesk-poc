@@ -23,6 +23,7 @@ export const ZOHO_UPDATE_TICKET_WEBHOOK = 'zoho-update-ticket';
 export const ZOHO_ADD_COMMENT_WEBHOOK = 'zoho-add-comment';
 export const ZOHO_CONTACTS_WEBHOOK = 'zoho-contacts';
 export const ZOHO_ACCOUNTS_WEBHOOK = 'zoho-accounts';
+export const ZOHO_GET_COMMENTS_WEBHOOK = 'zoho-get-comments';
 
 // Helper para construir URLs correctamente con o sin slash final en la base URL
 const buildN8nUrl = (basePath, endpoint) => {
@@ -164,7 +165,7 @@ export const proxyZohoRequest = (endpoint, options = {}) => {
  * @returns {Promise<Object>} - Promise with reports data
  */
 export const getReportsOverview = () => 
-  fetchFromN8N('/api/zoho/reports-overview');
+  fetchFromN8N('zoho-tickets');
 
 /**
  * Pure function to build query string from filters
@@ -316,14 +317,62 @@ export const updateTicketStatus = (ticketId, status) =>
  * @param {Object} commentData - Comment data
  * @returns {Promise<Object>} - Promise with comment data
  */
-export const addComment = (ticketId, commentData) => 
-  fetchFromN8N(`zoho-add-comment/${ticketId}`, {
+export const addComment = (ticketId, commentData) => {
+  // Validar parámetros de forma funcional
+  if (!ticketId || !commentData || !commentData.comment) {
+    return Promise.reject(new Error('Missing required parameters: ticketId and comment'));
+  }
+  
+  return fetchFromN8N(ZOHO_ADD_COMMENT_WEBHOOK, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify(commentData)
+    body: JSON.stringify({ 
+      ticketId, 
+      comment: commentData.comment,
+      isPublic: commentData.isPublic !== false,
+      author: commentData.author || 'Customer'
+    })
   });
+};
+
+/**
+ * Pure function to get filtered tickets
+ * @param {Object} filters - Query filters (status, priority, departmentId)
+ * @param {Number} limit - Number of tickets to return
+ * @param {Number} from - Starting index for pagination
+ * @returns {Promise<Object>} - Promise with tickets data
+ */
+export const getFilteredTickets = (filters = {}, limit = 50, from = 0) => {
+  // Construir query params de forma funcional
+  const queryParams = {
+    ...filters,
+    limit,
+    from
+  };
+  
+  // Usar URLSearchParams para crear una query string bien formada
+  const queryString = new URLSearchParams(
+    Object.entries(queryParams)
+      .filter(([_, value]) => value !== undefined && value !== null && value !== '')
+  ).toString();
+  
+  return fetchFromN8N(`${ZOHO_TICKETS_WEBHOOK}?${queryString}`);
+};
+
+/**
+ * Pure function to get comments for a ticket
+ * @param {String} ticketId - Ticket ID
+ * @returns {Promise<Object>} - Promise with comments data
+ */
+export const getTicketComments = (ticketId) => {
+  if (!ticketId) {
+    return Promise.reject(new Error('Missing required parameter: ticketId'));
+  }
+  
+  return fetchFromN8N(`${ZOHO_GET_COMMENTS_WEBHOOK}?ticketId=${ticketId}`);
+};
 
 /**
  * Pure function to get Zoho contacts
