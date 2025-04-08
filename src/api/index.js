@@ -563,7 +563,7 @@ export const setupApiRoutes = (deps) => {
   // --- Zoho API Proxy Endpoints ---
   
   // Reports Overview Endpoint - Refactorizado para usar n8n con enfoque declarativo
-  router.get('/api/zoho/reports-overview', withCors(async (ctx) => {
+  router.get('/projections/overview', withCors(async (ctx) => {
     try {
       // Usar el servicio zohoProxyService con enfoque declarativo
       const data = await zohoProxyService.getReportsOverview();

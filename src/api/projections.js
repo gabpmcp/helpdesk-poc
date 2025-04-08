@@ -58,6 +58,9 @@ export const setupProjectionRoutes = () => {
   // Dashboard overview projection
   router.get('/dashboard/overview', createProjectionHandler(projectionService.getDashboardOverview));
   
+  // New endpoint for general overview using the new n8n workflow
+  router.get('/overview', createProjectionHandler(projectionService.getReportsOverview));
+  
   // Dashboard tickets projection
   router.get('/dashboard/tickets', createProjectionHandler(projectionService.getDashboardTickets));
   

@@ -8,7 +8,7 @@
 import { Result, tryCatchAsync, deepFreeze, pipe } from '../utils/functional.js';
 
 // n8n configuration (should be in environment variables in production)
-const N8N_BASE_URL = process.env.N8N_BASE_URL || 'http://localhost:5678';
+const N8N_BASE_URL = process.env.N8N_BASE_URL || 'https://n8n.advancio.io';
 
 /**
  * Pure function to fetch data from n8n webhook
@@ -135,7 +135,7 @@ export const getDashboardOverview = pipe(
  * @returns {Function} - Async function that returns projected data
  */
 export const getDashboardTickets = pipe(
-  fetchFromN8N('/projections/dashboard/tickets'),
+  fetchFromN8N('/webhook/zoho-tickets'),
   result => result.map(projectTickets)
 );
 
@@ -153,6 +153,6 @@ export const getDashboardContacts = pipe(
  * @returns {Function} - Async function that returns projected data
  */
 export const getReportsOverview = pipe(
-  fetchFromN8N('/webhook/zoho/reports-overview'),
+  fetchFromN8N('/webhook/overview'),
   result => result.map(projectReportsOverview)
 );

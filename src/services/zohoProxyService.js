@@ -165,7 +165,7 @@ export const proxyZohoRequest = (endpoint, options = {}) => {
  * @returns {Promise<Object>} - Promise with reports data
  */
 export const getReportsOverview = () => 
-  fetchFromN8N('zoho-tickets');
+  fetchFromN8N('overview');
 
 /**
  * Pure function to build query string from filters
