@@ -764,7 +764,7 @@ export const setupApiRoutes = (deps) => {
       console.log('📊 Add comment result:', JSON.stringify(result).substring(0, 200));
       
       // Verificar la respuesta
-      if (!result || !result.success) {
+      if (!result) {
         console.error('❌ Error in n8n response for adding comment:', result);
         ctx.status = 500;
         ctx.body = deepFreeze({ 
