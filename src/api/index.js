@@ -601,7 +601,6 @@ export const setupApiRoutes = (deps) => {
   // Ticket Detail Endpoint
   router.get('/api/zoho/tickets/:id', withCors(async (ctx) => {
     try {
-      // Enfoque declarativo sin usar Result
       const { id } = ctx.params;
       console.log(`🔍 Fetching ticket details for ID: ${id}`);
       console.log(`🌐 Using webhook path: ${ZOHO_TICKET_DETAIL_WEBHOOK}?ticketId=${id}`);
@@ -685,19 +684,47 @@ export const setupApiRoutes = (deps) => {
       console.log('📊 Comments result type:', typeof result);
       console.log('📊 Comments result shape:', Object.keys(result || {}));
       
-      // Verificar la respuesta
-      if (!result || !result.success) {
-        console.error('❌ Error in n8n response for comments:', result);
+      // Verificar la respuesta - Nueva lógica de validación
+      if (!result) {
+        console.error('❌ Error in n8n response: No result object');
         ctx.status = 500;
         ctx.body = deepFreeze({ 
-          error: 'Invalid response from n8n for ticket comments'
+          error: 'No response from n8n for ticket comments'
         });
         return;
       }
       
-      const comments = result.comments || [];
-      console.log(`✅ Retrieved ${comments.length} comments for ticket ${id}`);
+      // Verificar que exista un array de comentarios o extraerlo de la estructura
+      let comments = [];
       
+      if (Array.isArray(result)) {
+        // Si el resultado es directamente un array
+        if (result.length > 0 && result[0].comments && Array.isArray(result[0].comments)) {
+          // Si es un array con un objeto que contiene comments (caso n8n workflow)
+          comments = result[0].comments;
+          console.log('📊 Found comments in first element of array');
+        } else {
+          // Si es un array de comentarios directamente
+          comments = result;
+        }
+      } else if (result.comments && Array.isArray(result.comments)) {
+        // Si tiene una propiedad comments que es un array
+        comments = result.comments;
+      } else if (result.data && Array.isArray(result.data)) {
+        // Si tiene una propiedad data que es un array
+        comments = result.data;
+      } else if (result.success === false) {
+        console.error('❌ Error in n8n response: API reported failure');
+        ctx.status = 500;
+        ctx.body = deepFreeze({ 
+          error: result.error || 'Error reported by n8n API'
+        });
+        return;
+      }
+      
+      console.log(`✅ Retrieved ${comments.length} comments for ticket ${id}`);
+      console.log({comments});
+
       ctx.status = 200;
       ctx.body = deepFreeze({
         success: true,
@@ -722,6 +749,7 @@ export const setupApiRoutes = (deps) => {
       const commentData = ctx.request.body;
       
       console.log(`🔍 Adding comment to ticket ID: ${id}`);
+      console.log({commentData});
       
       if (!commentData || !commentData.comment) {
         ctx.status = 400;
