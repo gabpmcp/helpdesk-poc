@@ -1,0 +1,141 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - helpdesk-poc/*
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+# Definir variables que serán diferentes en cada ambiente
+variables:
+  - name: isDev
+    value: $[eq(variables['Build.SourceBranchName'], 'develop')]
+
+steps:
+- task: NodeTool@0
+  inputs:
+    versionSpec: '20.x'
+  displayName: 'Instalar Node.js'
+
+- script: |
+    cd helpdesk-poc
+    npm ci
+  displayName: 'Instalar dependencias'
+
+- script: |
+    cd helpdesk-poc
+    npm run test
+  displayName: 'Ejecutar pruebas'
+  continueOnError: true
+
+# Generar archivo de configuración en formato JSON para producción
+- task: Bash@3
+  displayName: 'Generar configuración de entorno'
+  inputs:
+    targetType: 'inline'
+    script: |
+      cd helpdesk-poc
+      
+      # Crear script para generar archivo de configuración
+      cat > generate-config.js << EOL
+      const fs = require('fs');
+      
+      // Configuración específica para cada ambiente
+      const config = {
+        server: {
+          port: process.env.PORT || 3000,
+          nodeEnv: '$(Build.SourceBranchName)' === 'main' ? 'production' : 'staging',
+        },
+        security: {
+          jwtSecret: process.env.JWT_SECRET || 'default_secret_for_pipeline',
+          corsOrigin: '$(Build.SourceBranchName)' === 'main' 
+            ? 'https://helpdesk-portal.example.com' 
+            : 'https://staging-helpdesk-portal.example.com',
+        },
+        services: {
+          n8n: {
+            webhookBaseUrl: 'https://n8n.advancio.io/webhook',
+          },
+          supabase: {
+            url: process.env.SUPABASE_URL || 'https://mydadsjsnozkthqhloga.supabase.co',
+            key: process.env.SUPABASE_KEY || ''
+          }
+        }
+      };
+      
+      // Guardar configuración en un archivo que será inyectado al contenedor
+      fs.writeFileSync('runtime-config.json', JSON.stringify(config, null, 2));
+      console.log('Archivo de configuración generado');
+      EOL
+      
+      # Ejecutar script
+      node generate-config.js
+
+- task: ArchiveFiles@2
+  inputs:
+    rootFolderOrFile: 'helpdesk-poc'
+    includeRootFolder: false
+    archiveType: 'zip'
+    archiveFile: '$(Build.ArtifactStagingDirectory)/helpdesk-poc.zip'
+    replaceExistingArchive: true
+  displayName: 'Comprimir proyecto'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/helpdesk-poc.zip'
+    ArtifactName: 'helpdesk-poc'
+  displayName: 'Publicar artefacto'
+
+# Documentación de despliegue
+- task: Bash@3
+  displayName: 'Generar README de despliegue'
+  inputs:
+    targetType: 'inline'
+    script: |
+      cat > $(Build.ArtifactStagingDirectory)/deploy-instructions.md << EOL
+      # Instrucciones de despliegue (estilo Clojure)
+      
+      Este artefacto sigue principios funcionales de Clojure para la configuración:
+      
+      1. **NO utilizar .env en producción**
+      2. **Inyectar configuración en runtime**
+      
+      ## Opciones para inyectar configuración:
+      
+      ### Opción 1: Variables de entorno
+      
+      ```bash
+      NODE_ENV=production \
+      PORT=3000 \
+      JWT_SECRET=my_secret_key \
+      CORS_ORIGIN=https://mi-frontend.com \
+      SUPABASE_URL=https://my-project.supabase.co \
+      SUPABASE_KEY=my-key \
+      node src/index.js
+      ```
+      
+      ### Opción 2: Archivo de configuración en tiempo de ejecución
+      
+      ```bash
+      # Montar el archivo runtime-config.json en el contenedor
+      # El backend lo detectará automáticamente
+      docker run -v /path/to/runtime-config.json:/app/runtime-config.json my-app
+      ```
+      
+      ## Recomendación para Azure App Service
+      
+      Configurar las variables de entorno en la sección "Configuración > Variables de aplicación"
+      EOL
+      
+      # Publicar las instrucciones
+      echo "Instrucciones de despliegue generadas"
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/deploy-instructions.md'
+    ArtifactName: 'deploy-instructions'
+  displayName: 'Publicar instrucciones de despliegue'

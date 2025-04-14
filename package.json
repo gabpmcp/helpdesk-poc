@@ -4,7 +4,9 @@
     "type": "module",
     "scripts": {
         "start": "node src/index.js",
-        "dev": "nodemon --exec node --require dotenv/config src/index.js"
+        "dev": "nodemon --exec node --require dotenv/config src/index.js",
+        "build": "npm ci",
+        "test": "echo \"No tests specified\" && exit 0"
     },
     "dependencies": {
         "@koa/cors": "^5.0.0",

@@ -6,9 +6,29 @@ import Koa from 'koa';
 import cors from '@koa/cors';
 import http from 'http';
 import { initializeApi } from './api/index.js';
-import { supabaseClient, supabaseAuth, config } from './shell/config.js';
+import { createClient } from '@supabase/supabase-js';
 import n8nClient from './shell/n8nClient.js';
 import { initializeWebSocketServer } from './ws/index.js';
+import getConfig, { validateConfig } from './config.js';
+
+/**
+ * Obtener y validar la configuración del sistema
+ */
+const config = getConfig();
+console.log(`🔧 Modo ${config.server.nodeEnv}: Configuración cargada`);
+
+/**
+ * Crear clientes de servicio basados en la configuración
+ */
+const supabaseClient = config.services.supabase.url && config.services.supabase.key
+  ? createClient(config.services.supabase.url, config.services.supabase.key)
+  : null;
+
+if (supabaseClient) {
+  console.log('✅ Supabase configurado correctamente');
+} else {
+  console.warn('⚠️ Supabase no configurado - funcionalidad limitada');
+}
 
 /**
  * Initialize Koa application
@@ -22,7 +42,18 @@ const app = new Koa();
 const deps = {
   n8nClient,
   supabaseClient,
-  supabaseAuth
+  supabaseAuth: {
+    // Implementar métodos de autenticación basados en la configuración
+    signIn: async (email, password) => {
+      if (!supabaseClient) throw new Error('Supabase no configurado');
+      const { data, error } = await supabaseClient.auth.signInWithPassword({
+        email, password
+      });
+      if (error) throw error;
+      return data;
+    },
+    // Otros métodos de autenticación...
+  }
 };
 
 /**
@@ -31,7 +62,7 @@ const deps = {
 
 // Enable CORS for all routes with specific origin
 app.use(cors({
-  origin: 'http://localhost:5172', // Especificar exactamente el origen permitido
+  origin: config.security.corsOrigin,
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true,
@@ -68,8 +99,8 @@ initializeWebSocketServer(server);
 /**
  * Start server
  */
-server.listen(config.PORT, () => {
-  console.log(`Server running on port ${config.PORT}`);
+server.listen(config.server.port, () => {
+  console.log(`Server running on port ${config.server.port}`);
   console.log(`API endpoints:`);
   console.log(`- POST /api/commands - Central command endpoint`);
   console.log(`- GET /api/state/:userId - State reconstruction endpoint`);
