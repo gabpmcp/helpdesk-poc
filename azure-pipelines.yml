@@ -14,6 +14,8 @@ pool:
 variables:
   - name: isDev
     value: $[eq(variables['Build.SourceBranchName'], 'develop')]
+  - name: workingDirectory
+    value: '$(System.DefaultWorkingDirectory)'
 
 steps:
 - task: NodeTool@0
@@ -21,16 +23,36 @@ steps:
     versionSpec: '20.x'
   displayName: 'Instalar Node.js'
 
+# Etapa de diagnóstico para verificar la estructura de directorios
 - script: |
-    cd helpdesk-poc
+    echo "Mostrando estructura de directorios"
+    ls -la
+    echo "Directorio actual: $(pwd)"
+  displayName: 'Diagnóstico de directorios'
+
+# Generar package-lock.json primero si no existe
+- script: |
+    if [ ! -f "package-lock.json" ]; then
+      echo "Generando package-lock.json"
+      npm install --package-lock-only
+    else
+      echo "package-lock.json ya existe"
+    fi
+  displayName: 'Generar package-lock.json'
+  workingDirectory: '$(workingDirectory)'
+
+# Instalar dependencias sin el cd incorrecto
+- script: |
     npm ci
   displayName: 'Instalar dependencias'
-
+  workingDirectory: '$(workingDirectory)'
+  
+# Ejecutar pruebas sin el cd incorrecto
 - script: |
-    cd helpdesk-poc
     npm run test
   displayName: 'Ejecutar pruebas'
   continueOnError: true
+  workingDirectory: '$(workingDirectory)'
 
 # Generar archivo de configuración en formato JSON para producción
 - task: Bash@3
@@ -38,8 +60,6 @@ steps:
   inputs:
     targetType: 'inline'
     script: |
-      cd helpdesk-poc
-      
       # Crear script para generar archivo de configuración
       cat > generate-config.js << EOL
       const fs = require('fs');
@@ -74,10 +94,11 @@ steps:
       
       # Ejecutar script
       node generate-config.js
+    workingDirectory: '$(workingDirectory)'
 
 - task: ArchiveFiles@2
   inputs:
-    rootFolderOrFile: 'helpdesk-poc'
+    rootFolderOrFile: '$(workingDirectory)'
     includeRootFolder: false
     archiveType: 'zip'
     archiveFile: '$(Build.ArtifactStagingDirectory)/helpdesk-poc.zip'
