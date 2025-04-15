@@ -123,7 +123,11 @@ steps:
   inputs:
     targetType: 'inline'
     script: |
-      cat > $(Build.ArtifactStagingDirectory)/deploy-instructions.md << EOL
+      # Crear directorio si no existe
+      mkdir -p $(Build.ArtifactStagingDirectory)
+      
+      # Uso de heredoc con opción -EOF para permitir indentación y escape para variables
+      cat > $(Build.ArtifactStagingDirectory)/deploy-instructions.md <<-'EOF'
       # Instrucciones de despliegue (estilo Clojure)
       
       Este artefacto sigue principios funcionales de Clojure para la configuración:
@@ -156,10 +160,15 @@ steps:
       ## Recomendación para Azure App Service
       
       Configurar las variables de entorno en la sección "Configuración > Variables de aplicación"
-      EOL
+      EOF
       
-      # Publicar las instrucciones
-      echo "Instrucciones de despliegue generadas"
+      # Verificar que el archivo se haya creado correctamente
+      if [ -f "$(Build.ArtifactStagingDirectory)/deploy-instructions.md" ]; then
+        echo "✅ Instrucciones de despliegue generadas correctamente"
+      else
+        echo "❌ Error al generar instrucciones de despliegue"
+        exit 1
+      fi
 
 - task: PublishBuildArtifacts@1
   inputs:
