@@ -60,9 +60,10 @@ steps:
   inputs:
     targetType: 'inline'
     script: |
-      # Crear script para generar archivo de configuración
+      # Crear script para generar archivo de configuración en formato ESM
       cat > generate-config.js << EOL
-      const fs = require('fs');
+      // Utilizando importación ESM en lugar de require
+      import { writeFile } from 'fs/promises';
       
       // Configuración específica para cada ambiente
       const config = {
@@ -87,12 +88,17 @@ steps:
         }
       };
       
-      // Guardar configuración en un archivo que será inyectado al contenedor
-      fs.writeFileSync('runtime-config.json', JSON.stringify(config, null, 2));
-      console.log('Archivo de configuración generado');
+      // Usando async/await con promises para escritura de archivos (estilo ESM)
+      try {
+        await writeFile('runtime-config.json', JSON.stringify(config, null, 2));
+        console.log('Archivo de configuración generado');
+      } catch (error) {
+        console.error('Error al generar archivo de configuración:', error);
+        process.exit(1);
+      }
       EOL
       
-      # Ejecutar script
+      # Ejecutar script con Node.js
       node generate-config.js
     workingDirectory: '$(workingDirectory)'
 
