@@ -61,8 +61,20 @@ const deps = {
  */
 
 // Enable CORS for all routes with specific origin
+const allowedOrigins = [
+  'http://localhost:5172',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://platform.advancio.io'
+];
+
 app.use(cors({
-  origin: config.security.corsOrigin,
+  origin: (ctx) => {
+    if (allowedOrigins.includes(ctx.request.header.origin)) {
+      return ctx.request.header.origin;
+    }
+    return '';
+  },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true,
