@@ -75,7 +75,7 @@ steps:
         security: {
           jwtSecret: process.env.JWT_SECRET || '$(ZOHO_AUTH_TOKEN)',
           corsOrigin: '$(Build.SourceBranchName)' === 'main' 
-            ? 'https://192.168.3.60' 
+            ? 'https://platform.advancio.io' 
             : 'https://staging-helpdesk-portal.example.com',
         },
         services: {
