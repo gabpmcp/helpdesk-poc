@@ -3,9 +3,7 @@ trigger:
     include:
       - main
       - develop
-  paths:
-    include:
-      - helpdesk-poc/*
+
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -16,6 +14,7 @@ variables:
     value: $[eq(variables['Build.SourceBranchName'], 'develop')]
   - name: workingDirectory
     value: '$(System.DefaultWorkingDirectory)'
+  - group: variables-dev
 
 steps:
 - task: NodeTool@0
@@ -72,18 +71,27 @@ steps:
           nodeEnv: '$(Build.SourceBranchName)' === 'main' ? 'production' : 'staging',
         },
         security: {
-          jwtSecret: process.env.JWT_SECRET || 'default_secret_for_pipeline',
+          JWT_SECRET: process.env.JWT_SECRET || '$(ZOHO_AUTH_TOKEN)',
           corsOrigin: '$(Build.SourceBranchName)' === 'main' 
-            ? 'https://helpdesk-portal.example.com' 
+            ? 'https://platform.advancio.io' 
             : 'https://staging-helpdesk-portal.example.com',
+          SUPABASE_URL: '$(SUPABASE_URL)',
+          SUPABASE_KEY: '$(SUPABASE_SERVICE_KEY)',
+          N8N_BASE_URL: '$(ZOHO_BASE_URL)'
         },
         services: {
           n8n: {
-            webhookBaseUrl: 'https://n8n.advancio.io/webhook',
+            webhookBaseUrl: '$(N8N_BASE_URL)',
           },
           supabase: {
-            url: process.env.SUPABASE_URL || 'https://mydadsjsnozkthqhloga.supabase.co',
-            key: process.env.SUPABASE_KEY || ''
+            url: '$(SUPABASE_URL)',
+            key: '$(SUPABASE_ANON_KEY)',
+            serviceKey: '$(SUPABASE_SERVICE_KEY)'
+          },
+          zoho: {
+            apiKey: '$(ZOHO_API_KEY)',
+            authToken: '$(ZOHO_AUTH_TOKEN)',
+            baseUrl: '$(ZOHO_BASE_URL)'
           }
         }
       };
