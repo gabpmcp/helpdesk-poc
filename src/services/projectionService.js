@@ -122,6 +122,27 @@ const projectReportsOverview = (rawData) => deepFreeze({
 });
 
 /**
+ * Pure function to project Zoho categories/departments data
+ * @param {Object} rawData - Raw data from n8n
+ * @returns {Object} - Projected data
+ */
+const projectCategories = (rawData) => deepFreeze({
+  categories: Array.isArray(rawData) 
+    ? rawData.map(category => ({
+        id: category.id || '',
+        name: category.name || category.departmentName || '',
+        departmentId: category.departmentId || category.id || ''
+      }))
+    : (rawData.categories || []).map(category => ({
+        id: category.id || '',
+        name: category.name || category.departmentName || '',
+        departmentId: category.departmentId || category.id || ''
+      })),
+  timestamp: rawData.timestamp || new Date().toISOString(),
+  source: "zoho"
+});
+
+/**
  * Compose a function to fetch and project dashboard overview data
  * @returns {Function} - Async function that returns projected data
  */
@@ -155,4 +176,13 @@ export const getDashboardContacts = pipe(
 export const getReportsOverview = pipe(
   fetchFromN8N('/webhook/overview'),
   result => result.map(projectReportsOverview)
+);
+
+/**
+ * Compose a function to fetch and project Zoho categories/departments data
+ * @returns {Function} - Async function that returns projected data
+ */
+export const getZohoCategories = pipe(
+  fetchFromN8N('/webhook/zoho-categories'),
+  result => result.map(projectCategories)
 );

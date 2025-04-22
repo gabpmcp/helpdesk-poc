@@ -103,6 +103,9 @@ export const setupZohoApiRoutes = () => {
   // Zoho contacts API
   router.get('/contacts', createProjectionHandler(projectionService.getDashboardContacts));
 
+  // Zoho categories/departments API
+  router.get('/categories', createProjectionHandler(projectionService.getZohoCategories));
+
   return router;
 };
 
