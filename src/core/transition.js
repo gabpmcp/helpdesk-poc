@@ -36,6 +36,16 @@ const createEventFromCommand = (command, timestamp, eventHistory) => {
         timestamp
       };
       
+    case 'REGISTER_USER':
+      // Para registro, generamos un evento que iniciará la validación contra Zoho CRM
+      return {
+        type: 'USER_REGISTRATION_REQUESTED',
+        email: command.email,
+        password: command.password, // La contraseña será hasheada en la capa imperativa
+        timestamp,
+        id: generateUUID() // Generamos un ID único para rastrear este registro
+      };
+      
     case 'REFRESH_TOKEN':
       // Perform preliminary validation based on event history
       const validationResult = validateRefreshTokenFromHistory(command.email, command.refreshToken, eventHistory);

@@ -24,6 +24,7 @@ export const ZOHO_ADD_COMMENT_WEBHOOK = 'zoho-add-comment';
 export const ZOHO_CONTACTS_WEBHOOK = 'zoho-contacts';
 export const ZOHO_ACCOUNTS_WEBHOOK = 'zoho-accounts';
 export const ZOHO_GET_COMMENTS_WEBHOOK = 'zoho-get-comments';
+export const ZOHO_SEARCH_CONTACT_BY_EMAIL_WEBHOOK = 'zoho-search-contact-by-email';
 
 // Helper para construir URLs correctamente con o sin slash final en la base URL
 const buildN8nUrl = (basePath, endpoint) => {
@@ -404,4 +405,17 @@ export const getKbArticles = (options = {}) => {
   const endpoint = `/api/zoho/kb-articles${queryString ? `?${queryString}` : ''}`;
   
   return fetchFromN8N(endpoint);
+};
+
+/**
+ * Pure function to search for a contact by email in Zoho CRM
+ * @param {String} email - Email to search for
+ * @returns {Promise<Object>} - Promise with contact data
+ */
+export const searchContactByEmail = (email) => {
+  if (!email) {
+    return Promise.reject(new Error('Missing required parameter: email'));
+  }
+  
+  return fetchFromN8N(`${ZOHO_SEARCH_CONTACT_BY_EMAIL_WEBHOOK}?email=${email}`);
 };

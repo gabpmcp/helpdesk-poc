@@ -15,14 +15,35 @@ const {
   SUPABASE_ANON_KEY
 } = process.env
 
-const supabaseAdminClient = (() =>
-  SUPABASE_SERVICE_KEY
-    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-    : null
-)();
+const supabaseAdminClient = (() => {
+  if (SUPABASE_SERVICE_KEY) {
+    console.log('✅ Inicializando cliente administrativo de Supabase con clave de servicio');
+    try {
+      const client = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+      console.log('✅ Cliente administrativo de Supabase inicializado correctamente');
+      return client;
+    } catch (error) {
+      console.error('❌ Error al inicializar cliente administrativo de Supabase:', error);
+      return null;
+    }
+  } else {
+    console.warn('⚠️ No se pudo inicializar cliente administrativo de Supabase: SUPABASE_SERVICE_KEY no está definida');
+    return null;
+  }
+})();
 
 // ✅ Named export correctamente definido
-export const getSupabaseAdminClient = () => supabaseAdminClient;
+export const getSupabaseAdminClient = () => {
+  if (!supabaseAdminClient) {
+    console.warn('⚠️ Cliente administrativo de Supabase no disponible');
+  }
+  return supabaseAdminClient;
+};
 
 // Validar variables de entorno de Zoho
 if (!ZOHO_AUTH_TOKEN || !ZOHO_BASE_URL) {

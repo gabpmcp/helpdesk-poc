@@ -75,6 +75,15 @@ export const escalateTicketSchema = baseCommandSchema.extend({
 });
 
 /**
+ * Register user command schema
+ * Used for user registration with validation against Zoho CRM
+ */
+export const registerUserSchema = baseCommandSchema.extend({
+  type: z.literal('REGISTER_USER'),
+  password: z.string().min(8, "Password must be at least 8 characters long")
+});
+
+/**
  * Fetch dashboard command schema
  */
 export const fetchDashboardSchema = baseCommandSchema.extend({
@@ -149,6 +158,9 @@ const validateByCommandType = (command) => {
       
     case 'ESCALATE_TICKET':
       return mapZodResultToResult(escalateTicketSchema.safeParse(command));
+      
+    case 'REGISTER_USER':
+      return mapZodResultToResult(registerUserSchema.safeParse(command));
       
     case 'FETCH_DASHBOARD':
       return mapZodResultToResult(fetchDashboardSchema.safeParse(command));

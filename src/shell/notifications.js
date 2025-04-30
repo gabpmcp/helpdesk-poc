@@ -5,6 +5,7 @@
 import { getSupabaseAdminClient } from './config.js';
 import { v4 as generateUUID } from 'uuid';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { 
   Result, 
   tryCatch, 
@@ -94,6 +95,208 @@ export const notifyExternal = async (event, deps) => {
         
       case 'TICKET_ESCALATED':
         return await handleTicketEscalated(event, deps);
+        
+      case 'USER_REGISTRATION_REQUESTED':
+        try {
+          console.log(`🔐 Procesando registro de usuario para: ${event.email}`);
+          
+          // Verificar estructura del evento
+          if (!event.email || !event.password) {
+            console.error('❌ Error: evento de registro incompleto', JSON.stringify(event));
+            
+            // Si los datos están anidados en la propiedad data, usamos esos
+            if (event.data && event.data.email && event.data.password) {
+              console.log('📝 Usando datos desde event.data');
+              // Crear una copia del evento con los datos correctos
+              event = {
+                ...event,
+                email: event.data.email,
+                password: event.data.password
+              };
+            } else {
+              const incompleteEvent = deepFreeze({
+                type: event.type,
+                success: false,
+                email: event.email || (event.data && event.data.email) || 'unknown',
+                message: 'Datos de registro incompletos',
+                error: 'Missing required email or password',
+                timestamp: new Date().toISOString()
+              });
+              
+              // Persistir el evento de error (sin contraseña)
+              if (deps && deps.storeEvent) {
+                try {
+                  await deps.storeEvent(incompleteEvent);
+                  console.log('✅ Evento de error persistido correctamente');
+                } catch (storeErr) {
+                  console.error('❌ Error al persistir evento de error:', storeErr);
+                }
+              }
+              
+              return Result.ok(incompleteEvent);
+            }
+          }
+          
+          // Crear una copia del evento con la contraseña encriptada para logs (no para persistencia)
+          const eventWithEncryptedPassword = {
+            ...event,
+            password: encryptPassword(event.password)
+          };
+          
+          // Guardamos la contraseña original para el registro en Supabase
+          const originalPassword = event.password;
+          
+          // Importamos el servicio de registro actualizado
+          console.log('📦 Importando servicio de registro...');
+          const registrationService = await import('../services/registrationService.js');
+          
+          console.log('🔍 Validando contacto en Zoho CRM para:', event.email);
+          
+          try {
+            // Primero validamos el contacto en Zoho CRM
+            const contactData = await registrationService.validateZohoContact(event.email);
+            
+            console.log('✅ Contacto validado en Zoho CRM:', {
+              email: contactData.email,
+              fullName: contactData.fullName,
+              zoho_contact_id: contactData.zoho_contact_id,
+              zoho_account_id: contactData.zoho_account_id
+            });
+            
+            // Persistir el evento de validación exitosa (sin contraseña)
+            const validationEvent = deepFreeze({
+              type: 'CONTACT_VERIFICATION_SUCCEEDED',
+              success: true,
+              email: event.email,
+              zoho_contact_id: contactData.zoho_contact_id,
+              zoho_account_id: contactData.zoho_account_id,
+              fullName: contactData.fullName,
+              companyName: contactData.companyName,
+              timestamp: new Date().toISOString()
+            });
+            
+            if (deps && deps.storeEvent) {
+              try {
+                // Persistimos el evento sin la contraseña
+                await deps.storeEvent(validationEvent);
+                console.log('✅ Evento de validación persistido correctamente');
+              } catch (storeErr) {
+                console.error('❌ Error al persistir evento de validación:', storeErr);
+              }
+            }
+            
+            // Si llegamos aquí, el contacto existe en Zoho CRM, procedemos con el registro
+            console.log('🔑 Registrando usuario en Supabase...');
+            // Usamos la contraseña original (sin encriptar) para el registro
+            const result = await registrationService.registerUser(eventWithEncryptedPassword.email, originalPassword);
+            
+            console.log('✅ Registro completado exitosamente:', {
+              email: result.email,
+              user_id: result.user_id,
+              zoho_contact_id: result.zoho_contact_id
+            });
+            
+            // Formamos la respuesta con los datos devueltos
+            const successEvent = deepFreeze({
+              type: 'REGISTRATION_SUCCEEDED',
+              success: true,
+              email: result.email,
+              message: 'Registro exitoso. Ahora puedes iniciar sesión.',
+              zoho_contact_id: result.zoho_contact_id,
+              zoho_account_id: result.zoho_account_id,
+              user_id: result.user_id,
+              timestamp: new Date().toISOString()
+            });
+            
+            // Persistir el evento de éxito (sin contraseña)
+            if (deps && deps.storeEvent) {
+              try {
+                // Persistimos el evento sin la contraseña
+                await deps.storeEvent(successEvent);
+                console.log('✅ Evento de éxito persistido correctamente');
+              } catch (storeErr) {
+                console.error('❌ Error al persistir evento de éxito:', storeErr);
+              }
+            }
+            
+            return Result.ok(successEvent);
+          } catch (validationError) {
+            console.error('❌ Error en validación de contacto:', validationError);
+            
+            // Preparamos un mensaje amigable para el usuario basado en el tipo de error
+            let userMessage = 'Error en el registro. Por favor intente nuevamente.';
+            let errorType = 'REGISTRATION_ERROR';
+            
+            // Si es un error específico de validación en Zoho, personalizamos el mensaje
+            if (validationError.message && (
+                validationError.message.includes('not registered') || 
+                validationError.message.includes('Zoho CRM'))) {
+              userMessage = 'El correo electrónico no está registrado como contacto en nuestro sistema.';
+              errorType = 'CONTACT_VERIFICATION_FAILED';
+            } else if (validationError.message && validationError.message.includes('Network error')) {
+              userMessage = 'Error de conexión al validar el contacto. Por favor intente más tarde.';
+              errorType = 'NETWORK_ERROR';
+            }
+            
+            const errorEvent = deepFreeze({
+              type: errorType,
+              success: false,
+              email: eventWithEncryptedPassword.email,
+              message: userMessage,
+              error: validationError.message || 'Unknown error',
+              stack: validationError.stack,
+              timestamp: new Date().toISOString()
+            });
+            
+            // Persistir el evento de error (sin contraseña)
+            if (deps && deps.storeEvent) {
+              try {
+                // Persistimos el evento sin la contraseña
+                await deps.storeEvent(errorEvent);
+                console.log('✅ Evento de error persistido correctamente');
+              } catch (storeErr) {
+                console.error('❌ Error al persistir evento de error:', storeErr);
+              }
+            }
+            
+            return Result.ok(errorEvent);
+          }
+        } catch (error) {
+          console.error('❌ Error general en registro de usuario:', error);
+          
+          // Preparamos un mensaje amigable para el usuario
+          let userMessage = 'Error en el registro. Por favor intente nuevamente.';
+          
+          // Si es un error específico de validación en Zoho, personalizamos el mensaje
+          if (error.message && (
+              error.message.includes('not registered') || 
+              error.message.includes('Zoho CRM'))) {
+            userMessage = 'El correo electrónico no está registrado como contacto en nuestro sistema.';
+          }
+          
+          const generalErrorEvent = deepFreeze({
+            type: 'REGISTRATION_FAILED',
+            success: false,
+            email: eventWithEncryptedPassword.email,
+            message: userMessage,
+            error: error.message || 'Unknown error',
+            stack: error.stack,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Persistir el evento de error general (sin contraseña)
+          if (deps && deps.storeEvent) {
+            try {
+              // Persistimos el evento sin la contraseña
+              await deps.storeEvent(generalErrorEvent);
+              console.log('✅ Evento de error general persistido correctamente');
+            } catch (storeErr) {
+              console.error('❌ Error al persistir evento de error general:', storeErr);
+            }
+          }
+          
+          return Result.ok(generalErrorEvent);
+        }
         
       default:
         // For events that don't require external notification, return as is
@@ -450,15 +653,61 @@ const safeJsonParse = (value) => {
  * @param {Object} supabaseAuth - Supabase authentication functions
  * @returns {Function} - Function that takes an email and password and returns a Result
  */
-export const registerSupabaseUser = (supabaseAuth) => (email, password) =>
-  Promise.resolve({ email, password })
-    .then(tap(logRegisterAttempt))
-    .then(assertSignUpAvailable(supabaseAuth))
-    .then(signUpWithSupabase({supabaseUrl: SUPABASE_URL, supabaseAnonKey: SUPABASE_ANON_KEY}))
-    .then(validateSignUpResponse)
-    .then(markUserAsVerified)
-    .then(tap(logRegisterSuccess))
-    .catch((err) => Promise.reject(parseError(err, 'REGISTRATION_FAILED')));
+export const registerSupabaseUser = (supabaseAuth) => async (email, password) => {
+  console.log('Registering user in Supabase:', email);
+  
+  if (!supabaseAuth || typeof supabaseAuth.signUp !== 'function') {
+    console.error('Supabase auth not available');
+    return Result.error(new Error('Supabase authentication service not available'));
+  }
+  
+  try {
+    // Obtener el contacto de Zoho CRM primero para validar
+    const zohoService = await import('../services/registrationService.js');
+    
+    // Validar que el contacto existe en Zoho CRM
+    const contactResult = await zohoService.validateContactInZoho(email);
+    
+    if (!contactResult.isOk) {
+      return Result.error(new Error(
+        `Email not found in Zoho CRM or validation failed: ${contactResult.unwrapError()}`
+      ));
+    }
+    
+    // Extraer los datos del contacto
+    const contactData = contactResult.unwrap();
+    
+    // Registrar en Supabase con los datos del contacto de Zoho
+    const { data, error } = await supabaseAuth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          zoho_contact_id: contactData.zoho_contact_id,
+          zoho_account_id: contactData.zoho_account_id,
+          full_name: contactData.full_name
+        }
+      }
+    });
+    
+    if (error) {
+      return Result.error(new Error(`Registration failed: ${error.message}`));
+    }
+    
+    if (!data || !data.user) {
+      return Result.error(new Error('Registration failed: No user data returned'));
+    }
+    
+    // Devolver los datos del usuario registrado
+    return Result.ok({
+      userId: data.user.id,
+      email: data.user.email
+    });
+  } catch (error) {
+    console.error('Exception registering user:', error);
+    return Result.error(new Error(`Registration error: ${error.message}`));
+  }
+};
 
 /**
  * Handles login request events
@@ -469,128 +718,30 @@ export const registerSupabaseUser = (supabaseAuth) => (email, password) =>
 const handleLoginRequested = (event, deps) =>
   Promise.resolve(event)
     .then(tap(logStart))
-    .then(assertDepsAvailable(deps))
-    .then(verifyContact(deps))
-    .then(storeContactData)
-    .then(checkSupabase(deps))
-    .then(authenticateOrRegister(event, deps))
+    .then(assertSupabaseAvailable(deps))
+    .then(authenticateWithSupabase(deps))
     .catch(handleUnhandled(event, deps));
+
+// Función auxiliar tap para ejecutar una función y devolver el valor original
+const tap = (fn) => (val) => {
+  fn(val);
+  return val;
+};
 
 const logStart = ({ email }) =>
   console.log(`[LOGIN] Processing login request for: ${email}`);
 
-const assertDepsAvailable = (deps) => (event) => {
-  const missing = !deps?.n8nClient || !deps?.supabaseAuth;
-  return missing
-    ? Promise.reject({
-        reason: 'Authentication services not available',
-        errorCode: 'SERVICE_UNAVAILABLE',
-        email: event.email // Preserve email for error handling
-      })
-    : event;
+const assertSupabaseAvailable = (deps) => (event) => {
+  if (!deps?.supabaseAuth) {
+    console.error('[LOGIN] Supabase authentication service not available');
+    return Promise.reject({
+      reason: 'Authentication service not available',
+      errorCode: 'SERVICE_UNAVAILABLE',
+      email: event.email // Preserve email for error handling
+    });
+  }
+  return event;
 };
-
-const verifyContact = (deps) => (event) =>
-  deps.n8nClient
-    .verifyZohoContact(event.email)
-    .then((result) =>
-      result.isError
-        ? Promise.reject(parseError(result.unwrapError(), 'CONTACT_VERIFICATION_FAILED'))
-        : { event, contact: result.unwrap() }
-    );
-
-const storeContactData = ({ event, contact }) =>
-  Promise.resolve({ event, contact });
-
-const checkSupabase = (deps) => ({ event, contact }) =>
-  checkSupabaseUser(deps.supabaseClient)(event.email)
-    .then((user) => ({ event, contact, user })) // el valor `null` es manejable downstream
-    .catch((err) =>
-      Promise.reject(parseError(err, 'USER_VERIFICATION_FAILED'))
-    );
-
-const authenticateOrRegister = (event, deps) => ({ contact, user }) =>
-  user
-    ? loginFlow(event, contact, deps)
-    : registerFlow(event, contact, deps);
-
-const loginFlow = (event, contact, deps) =>
-  loginUser({ supabaseUrl: SUPABASE_URL, supabaseAnonKey: SUPABASE_ANON_KEY })(event.email, event.password)
-    .then(withCompanies(deps, contact))
-    .then((companiesAndUser) =>
-      buildAuthResult(event, contact, companiesAndUser, false)
-    )
-    .then((authResult) => handleSuccessfulLogin(event, authResult, deps))
-    .catch((err) => {
-      console.error('[LOGIN] Error logging in:', err);
-      return handleFailedLogin(event, parseError(err, 'LOGIN_FAILED'), deps);
-    }
-    );
-
-const registerFlow = (event, contact, deps) =>
-  registerSupabaseUser(deps.supabaseAuth)(event.email, event.password)
-  .then(withCompanies(deps, contact))
-  .then((companiesAndUser) =>
-    storeUserRegisteredEvent(event, contact, companiesAndUser, deps)
-  )
-  .then((authResult) => handleSuccessfulLogin(event, authResult, deps));
-    
-export const withCompanies = (deps, contact) => (userData) =>
-  { console.log({userData}); return Promise.resolve(contact?.contact?.id)
-    .then(fetchCompaniesOrEmpty(deps))
-    .then(buildUserWithCompanies(userData)); }
-
-const fetchCompaniesOrEmpty = (deps) => (contactId) =>
-  contactId
-    ? deps.n8nClient
-        .getUserCompanies(contactId)
-        .then(({ companies }) => companies)
-        .catch((err) => {
-          console.warn('[LOGIN] Error fetching companies, continuing with empty list:', err);
-          return [];
-        })
-    : Promise.resolve([]);
-
-const buildUserWithCompanies = (userData) => (companies) => ({
-  userData,
-  companies,
-});
-
-const storeUserRegisteredEvent = (event, contact, { userData, companies }, deps) => {
-  const userRegisteredEvent = deepFreeze({
-    type: 'USER_REGISTERED',
-    userId: userData.userId,
-    email: userData.email,
-    zohoContactId: contact.contact?.id,
-    zohoContactDetails: contact.contact,
-    companies,
-    timestamp: event.timestamp,
-  });
-
-  return deps.storeEvent(userRegisteredEvent).then((result) => {
-    if (result.isError) {
-      console.error('[LOGIN] Failed to store USER_REGISTERED event:', result.unwrapError());
-    } else {
-      console.log('[LOGIN] USER_REGISTERED event stored successfully');
-    }
-    return buildAuthResult(event, contact, { userData, companies }, true);
-  });
-};
-
-const buildAuthResult = (event, contact, { userData, companies }, isNewUser) => ({
-  isAuthenticated: true,
-  userId: userData.userId,
-  email: userData.email,
-  userDetails: {
-    ...userData.userDetails,
-    zohoContactId: contact.contact?.id,
-    zohoContactDetails: contact.contact,
-  },
-  companies,
-  session: userData.session,
-  ...(isNewUser ? { isNewUser: true } : {}),
-});
-
 
 const handleUnhandled = (event, deps) => (error) => {
   console.error('[LOGIN] Unhandled exception in handleLoginRequested:', error);
@@ -603,7 +754,369 @@ const handleUnhandled = (event, deps) => (error) => {
   return handleFailedLogin(event, authResult, deps);
 };
 
-const tap = (fn) => (val) => (fn(val), val);
+const authenticateWithSupabase = (deps) => async (event) => {
+  console.log('[SUPABASE] Authenticating user with Supabase:', event.email);
+  
+  try {
+    // Importar la función confirmUserEmail y getSupabaseAdminClient
+    const { confirmUserEmail } = await import('../services/registrationService.js');
+    const { getSupabaseAdminClient } = await import('./config.js');
+    
+    // Obtener el cliente admin de Supabase
+    const adminClient = getSupabaseAdminClient();
+    
+    if (!adminClient) {
+      console.error('[SUPABASE] Admin client not available');
+      throw new Error('Admin client not available');
+    }
+    
+    // Buscar el usuario por email usando la API admin
+    const { data: { users = [] }, error: listError } = await adminClient.auth.admin.listUsers({
+      filters: {
+        email: event.email
+      }
+    });
+    
+    if (listError) {
+      console.error('[SUPABASE] Error listing users:', listError);
+      throw listError;
+    }
+    
+    const user = users.find(u => u.email === event.email);
+    
+    if (user && user.id) {
+      console.log('[SUPABASE] Found user ID:', user.id);
+      
+      // Intentar confirmar el email
+      const confirmed = await confirmUserEmail(user.id, event.email);
+      
+      if (confirmed) {
+        console.log('[SUPABASE] Email confirmed successfully, retrying login...');
+        
+        // Reintentar el login directamente con Supabase
+        try {
+          // Crear un cliente de Supabase con la clave anónima para simular login del usuario
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabaseClient = createClient(
+            process.env.SUPABASE_URL,
+            process.env.SUPABASE_ANON_KEY
+          );
+          
+          // Realizar login directamente
+          const { data, error } = await supabaseClient.auth.signInWithPassword({
+            email: event.email,
+            password: event.password
+          });
+          
+          if (error) {
+            console.error('[SUPABASE] Direct retry authentication error:', error);
+            return Promise.reject({
+              reason: 'Invalid credentials',
+              errorCode: 'INVALID_CREDENTIALS',
+              errorDetails: error
+            });
+          }
+          
+          if (!data || !data.user) {
+            console.error('[SUPABASE] No user data returned on direct retry');
+            return Promise.reject({
+              reason: 'Authentication failed',
+              errorCode: 'AUTH_FAILED',
+              errorDetails: { message: 'No user data returned from authentication service on direct retry' }
+            });
+          }
+          
+          console.log('[SUPABASE] Authentication successful for user on direct retry:', data.user.id);
+          
+          // Crear evento LOGIN_SUCCEEDED
+          const loginSucceededEvent = deepFreeze({
+            type: 'LOGIN_SUCCEEDED',
+            userId: data.user.id,
+            email: data.user.email,
+            userDetails: data.user,
+            session: data.session,
+            timestamp: event.timestamp || new Date().toISOString()
+          });
+          
+          // Almacenar el evento de inicio de sesión exitoso
+          if (deps && deps.storeEvent) {
+            try {
+              await deps.storeEvent(loginSucceededEvent);
+              console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
+            } catch (storeErr) {
+              console.error('[LOGIN] Failed to store LOGIN_SUCCEEDED event:', storeErr);
+            }
+          }
+          
+          return loginSucceededEvent;
+        } catch (error) {
+          console.error('[SUPABASE] Unexpected error during direct retry authentication:', error);
+          return Promise.reject({
+            reason: 'Authentication failed',
+            errorCode: 'AUTH_FAILED',
+            errorDetails: extractErrorInfo(error)
+          });
+        }
+      }
+    } else {
+      console.error('[SUPABASE] Could not find user ID for email:', event.email);
+    }
+    
+    // Usar Supabase Auth para iniciar sesión
+    const result = await deps.supabaseAuth.signIn(event.email, event.password);
+    
+    if (result.isError) {
+      const error = result.unwrapError();
+      console.error('[SUPABASE] Authentication error:', error);
+      
+      // Verificar si el error es "email_not_confirmed"
+      if (error && (error.code === 'email_not_confirmed' || (error.details && error.details.errorCode === 'email_not_confirmed'))) {
+        console.log('[SUPABASE] Email not confirmed, attempting to confirm it manually...');
+        
+        try {
+          // Importar la función confirmUserEmail
+          const { confirmUserEmail } = await import('../services/registrationService.js');
+          
+          // Obtener el ID del usuario
+          const { data: userData } = await deps.supabaseClient
+            .from('users')
+            .select('id')
+            .eq('email', event.email)
+            .single();
+          
+          if (userData && userData.id) {
+            console.log('[SUPABASE] Found user ID:', userData.id);
+            
+            // Intentar confirmar el email
+            const confirmed = await confirmUserEmail(userData.id, event.email);
+            
+            if (confirmed) {
+              console.log('[SUPABASE] Email confirmed successfully, retrying login...');
+              
+              // Reintentar el login directamente con Supabase
+              try {
+                // Crear un cliente de Supabase con la clave anónima para simular login del usuario
+                const { createClient } = await import('@supabase/supabase-js');
+                const supabaseClient = createClient(
+                  process.env.SUPABASE_URL,
+                  process.env.SUPABASE_ANON_KEY
+                );
+                
+                // Realizar login directamente
+                const { data, error } = await supabaseClient.auth.signInWithPassword({
+                  email: event.email,
+                  password: event.password
+                });
+                
+                if (error) {
+                  console.error('[SUPABASE] Direct retry authentication error:', error);
+                  return Promise.reject({
+                    reason: 'Invalid credentials',
+                    errorCode: 'INVALID_CREDENTIALS',
+                    errorDetails: error
+                  });
+                }
+                
+                if (!data || !data.user) {
+                  console.error('[SUPABASE] No user data returned on direct retry');
+                  return Promise.reject({
+                    reason: 'Authentication failed',
+                    errorCode: 'AUTH_FAILED',
+                    errorDetails: { message: 'No user data returned from authentication service on direct retry' }
+                  });
+                }
+                
+                console.log('[SUPABASE] Authentication successful for user on direct retry:', data.user.id);
+                
+                // Crear evento LOGIN_SUCCEEDED
+                const loginSucceededEvent = deepFreeze({
+                  type: 'LOGIN_SUCCEEDED',
+                  userId: data.user.id,
+                  email: data.user.email,
+                  userDetails: data.user,
+                  session: data.session,
+                  timestamp: event.timestamp || new Date().toISOString()
+                });
+                
+                // Almacenar el evento de inicio de sesión exitoso
+                if (deps && deps.storeEvent) {
+                  try {
+                    await deps.storeEvent(loginSucceededEvent);
+                    console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
+                  } catch (storeErr) {
+                    console.error('[LOGIN] Failed to store LOGIN_SUCCEEDED event:', storeErr);
+                  }
+                }
+                
+                return loginSucceededEvent;
+              } catch (error) {
+                console.error('[SUPABASE] Unexpected error during direct retry authentication:', error);
+                return Promise.reject({
+                  reason: 'Authentication failed',
+                  errorCode: 'AUTH_FAILED',
+                  errorDetails: extractErrorInfo(error)
+                });
+              }
+            }
+          } else {
+            console.error('[SUPABASE] Could not find user ID for email:', event.email);
+          }
+        } catch (confirmError) {
+          console.error('[SUPABASE] Error confirming email:', confirmError);
+        }
+      }
+      
+      return Promise.reject({
+        reason: 'Invalid credentials',
+        errorCode: 'INVALID_CREDENTIALS',
+        errorDetails: error
+      });
+    }
+    
+    const userData = result;
+    
+    if (!userData || !userData.userId) {
+      console.error('[SUPABASE] No user data returned');
+      return Promise.reject({
+        reason: 'Authentication failed',
+        errorCode: 'AUTH_FAILED',
+        errorDetails: { message: 'No user data returned from authentication service' }
+      });
+    }
+    
+    console.log('[SUPABASE] Authentication successful for user:', userData.userId);
+    
+    // Crear evento LOGIN_SUCCEEDED
+    const loginSucceededEvent = deepFreeze({
+      type: 'LOGIN_SUCCEEDED',
+      userId: userData.userId,
+      email: userData.email,
+      userDetails: userData.userDetails,
+      session: userData.session,
+      timestamp: event.timestamp || new Date().toISOString()
+    });
+    
+    // Almacenar el evento de inicio de sesión exitoso
+    if (deps && deps.storeEvent) {
+      try {
+        await deps.storeEvent(loginSucceededEvent);
+        console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
+      } catch (storeErr) {
+        console.error('[LOGIN] Failed to store LOGIN_SUCCEEDED event:', storeErr);
+      }
+    }
+    
+    return loginSucceededEvent;
+  } catch (error) {
+    console.error('[SUPABASE] Unexpected error during authentication:', error);
+    
+    // Verificar si el error es "email_not_confirmed" también aquí
+    if (error && (error.code === 'email_not_confirmed' || 
+        (error.details && error.details.errorCode === 'email_not_confirmed') ||
+        (error.message && error.message.includes('Email not confirmed')))) {
+      
+      console.log('[SUPABASE] Email not confirmed (catch block), attempting to confirm it manually...');
+      
+      try {
+        // Importar la función confirmUserEmail
+        const { confirmUserEmail } = await import('../services/registrationService.js');
+        
+        // Obtener el ID del usuario
+        const { data: userData } = await deps.supabaseClient
+          .from('users')
+          .select('id')
+          .eq('email', event.email)
+          .single();
+        
+        if (userData && userData.id) {
+          console.log('[SUPABASE] Found user ID:', userData.id);
+          
+          // Intentar confirmar el email
+          const confirmed = await confirmUserEmail(userData.id, event.email);
+          
+          if (confirmed) {
+            console.log('[SUPABASE] Email confirmed successfully, retrying login...');
+            
+            // Reintentar el login directamente con Supabase
+            try {
+              // Crear un cliente de Supabase con la clave anónima para simular login del usuario
+              const { createClient } = await import('@supabase/supabase-js');
+              const supabaseClient = createClient(
+                process.env.SUPABASE_URL,
+                process.env.SUPABASE_ANON_KEY
+              );
+              
+              // Realizar login directamente
+              const { data, error } = await supabaseClient.auth.signInWithPassword({
+                email: event.email,
+                password: event.password
+              });
+              
+              if (error) {
+                console.error('[SUPABASE] Direct retry authentication error:', error);
+                return Promise.reject({
+                  reason: 'Invalid credentials',
+                  errorCode: 'INVALID_CREDENTIALS',
+                  errorDetails: error
+                });
+              }
+              
+              if (!data || !data.user) {
+                console.error('[SUPABASE] No user data returned on direct retry');
+                return Promise.reject({
+                  reason: 'Authentication failed',
+                  errorCode: 'AUTH_FAILED',
+                  errorDetails: { message: 'No user data returned from authentication service on direct retry' }
+                });
+              }
+              
+              console.log('[SUPABASE] Authentication successful for user on direct retry:', data.user.id);
+              
+              // Crear evento LOGIN_SUCCEEDED
+              const loginSucceededEvent = deepFreeze({
+                type: 'LOGIN_SUCCEEDED',
+                userId: data.user.id,
+                email: data.user.email,
+                userDetails: data.user,
+                session: data.session,
+                timestamp: event.timestamp || new Date().toISOString()
+              });
+              
+              // Almacenar el evento de inicio de sesión exitoso
+              if (deps && deps.storeEvent) {
+                try {
+                  await deps.storeEvent(loginSucceededEvent);
+                  console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
+                } catch (storeErr) {
+                  console.error('[LOGIN] Failed to store LOGIN_SUCCEEDED event:', storeErr);
+                }
+              }
+              
+              return loginSucceededEvent;
+            } catch (error) {
+              console.error('[SUPABASE] Unexpected error during direct retry authentication:', error);
+              return Promise.reject({
+                reason: 'Authentication failed',
+                errorCode: 'AUTH_FAILED',
+                errorDetails: extractErrorInfo(error)
+              });
+            }
+          }
+        } else {
+          console.error('[SUPABASE] Could not find user ID for email:', event.email);
+        }
+      } catch (confirmError) {
+        console.error('[SUPABASE] Error confirming email:', confirmError);
+      }
+    }
+    
+    return Promise.reject({
+      reason: 'Authentication failed',
+      errorCode: 'AUTH_FAILED',
+      errorDetails: extractErrorInfo(error)
+    });
+  }
+};
 
 /**
  * Handles a failed login attempt
@@ -792,7 +1305,7 @@ const verifyCredentials = async (email, password, deps) => {
       console.log('[SUPABASE] Authentication result:', result);
       
       // Verificar que el resultado tenga los datos necesarios
-      if (!result.unwrap || !result.unwrap().userId) {
+      if (!result || !result.userId) {
         console.error('[SUPABASE] Invalid authentication result format');
         throw new Error(JSON.stringify({
           status: 401,
@@ -804,7 +1317,7 @@ const verifyCredentials = async (email, password, deps) => {
         }));
       }
       
-      return result.unwrap();
+      return result;
     } catch (error) {
       console.error('[SUPABASE] Authentication error:', error);
       // Propagar el error para que sea manejado por handleAuthError
@@ -1316,4 +1829,91 @@ const handleTicketEscalated = async (event, deps) => {
     
     return successEvent;
   })();
+};
+
+/**
+ * Handles user registration requests
+ * Verifies contact in Zoho CRM and registers user in Supabase
+ * @param {Object} event - User registration request event
+ * @param {NotificationDeps} deps - Dependencies for notification operations
+ */
+const handleUserRegistrationRequested = async (event, deps) => {
+  // Use tryCatchAsync to handle errors functionally
+  return tryCatchAsync(async () => {
+    console.log('Verifying contact in Zoho CRM:', event.email);
+    
+    // Verify contact in Zoho CRM
+    const verifyResult = await deps.n8nClient.verifyZohoContact(event.email);
+    
+    if (verifyResult.isError) {
+      console.error('Failed to verify contact:', verifyResult.unwrapError());
+      
+      // Create verification failed event
+      const failedEvent = deepFreeze({
+        type: 'CONTACT_VERIFICATION_FAILED',
+        email: event.email,
+        reason: verifyResult.unwrapError().message,
+        timestamp: new Date().toISOString()
+      });
+      
+      await deps.storeEvent(failedEvent);
+      return failedEvent;
+    }
+    
+    // Register user in Supabase
+    const registerResult = await registerSupabaseUser(deps.supabaseAuth)(event.email, event.password);
+    
+    if (registerResult.isError) {
+      console.error('Failed to register user:', registerResult.unwrapError());
+      
+      // Create registration failed event
+      const failedEvent = deepFreeze({
+        type: 'REGISTRATION_FAILED',
+        email: event.email,
+        reason: registerResult.unwrapError().message,
+        timestamp: new Date().toISOString()
+      });
+      
+      await deps.storeEvent(failedEvent);
+      return failedEvent;
+    }
+    
+    // Create registration success event
+    const successEvent = deepFreeze({
+      type: 'REGISTRATION_SUCCEEDED',
+      email: event.email,
+      userId: registerResult.unwrap().userId,
+      timestamp: new Date().toISOString()
+    });
+    
+    return successEvent;
+  })();
+};
+
+/**
+ * Encripta una contraseña para almacenamiento seguro en eventos
+ * @param {string} password - Contraseña a encriptar
+ * @returns {string} - Contraseña encriptada en formato hexadecimal
+ */
+const encryptPassword = (password) => {
+  if (!password) return null;
+  
+  try {
+    // Usar una clave de encriptación basada en variables de entorno
+    // En producción, esto debería ser una clave segura almacenada en secretos
+    const encryptionKey = process.env.PASSWORD_ENCRYPTION_KEY || 
+                          process.env.JWT_SECRET || 
+                          'secure-encryption-key-for-events';
+    
+    // Crear un hash SHA-256 de la contraseña con la clave
+    const hash = crypto.createHmac('sha256', encryptionKey)
+                       .update(password)
+                       .digest('hex');
+    
+    // Devolver el hash con un prefijo para indicar que está encriptado
+    return `enc:${hash}`;
+  } catch (error) {
+    console.error('❌ Error al encriptar contraseña:', error);
+    return 'enc:error';
+  }
 };

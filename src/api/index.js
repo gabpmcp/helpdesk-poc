@@ -12,7 +12,8 @@ import {
   fetchEventsForUser, 
   fetchAuthEvents,
   createSupabaseQueryFn,
-  createSupabasePersistFn
+  createSupabasePersistFn,
+  getSupabaseAdminPersistFn
 } from '../shell/eventStore.js';
 import { notifyExternal } from '../shell/notifications.js';
 import { Result, tryCatchAsync, deepFreeze } from '../utils/functional.js';
@@ -59,7 +60,7 @@ const withCors = handler => async (ctx, next) => {
  */
 const verifyJwt = async (ctx, next) => {
   // Skip JWT verification for login attempts
-  if (ctx.path === '/commands' && ctx.method === 'POST') {
+  if (ctx.path === '/api/commands' && ctx.method === 'POST') {
     const bodyResult = await parseBody(ctx);
     
     if (bodyResult.isOk) {
@@ -302,59 +303,104 @@ const notify$ = async (event, deps) => {
 const shapeResponse = (event) => {
   console.log('Shaping response for event:', event.type);
   
+  let response;
+  
   switch (event.type) {
     case 'LOGIN_SUCCEEDED':
-      return {
+      response = {
         success: true,
         email: event.email,
         accessToken: event.accessToken,
         refreshToken: event.refreshToken
       };
+      break;
       
-    case 'USER_REGISTERED':
-      return {
+    case 'REGISTRATION_SUCCEEDED':
+      response = {
         success: true,
         email: event.email,
-        isNewUser: true,
-        zohoContactId: event.zohoContactId
+        message: 'Registration successful. You can now login.',
+        userId: event.userId
       };
+      break;
+      
+    case 'REGISTRATION_FAILED':
+    case 'CONTACT_VERIFICATION_FAILED':
+      response = {
+        success: false,
+        error: event.reason || 'Registration failed. Email not found in Zoho CRM.',
+        message: 'Registration failed. Please make sure your email is registered as a contact in our system.'
+      };
+      break;
       
     case 'LOGIN_FAILED':
-      return {
+      response = {
         success: false,
         reason: event.reason
       };
+      break;
       
     case 'TOKEN_REFRESHED':
-      return {
+      response = {
         success: true,
         email: event.email,
         accessToken: event.accessToken,
         refreshToken: event.refreshToken
       };
+      break;
       
     case 'INVALID_REFRESH_TOKEN':
-      return {
+      response = {
         success: false,
         reason: event.reason
       };
+      break;
+      
+    case 'USER_REGISTRATION_REQUESTED':
+      // Para eventos de registro, asegurarnos de incluir toda la información relevante
+      response = {
+        success: event.success !== false, // Si no está explícitamente false, asumimos true
+        email: event.email,
+        message: event.message || 'Registration processed',
+        error: event.error || null,
+        zoho_contact_id: event.zoho_contact_id || null,
+        zoho_account_id: event.zoho_account_id || null
+      };
+      break;
       
     default:
-      return {
+      response = {
         success: true,
-        event
+        event: { ...event } // Crear una copia para evitar referencias circulares
       };
+      break;
   }
+  
+  // Asegurarnos de que la respuesta sea un objeto plano sin métodos especiales
+  console.log('Shaped response:', response);
+  return response;
 };
 
 /**
  * Create primitive functions for external services
  * These functions follow functional-declarative principles
  */
-const createExternalServiceFunctions = (deps) => {
+const createExternalServiceFunctions = async (deps) => {
   // Create primitive query and persist functions
   const queryFn = deps.supabaseClient ? createSupabaseQueryFn(deps.supabaseClient) : null;
-  const persistFn = deps.supabaseClient ? createSupabasePersistFn(deps.supabaseClient) : null;
+  
+  // Obtener la función de persistencia de forma asíncrona
+  let persistFn = null;
+  if (deps.supabaseClient) {
+    try {
+      persistFn = await getSupabaseAdminPersistFn();
+      console.log('✅ Función de persistencia con permisos de admin inicializada correctamente');
+    } catch (error) {
+      console.error('❌ Error al inicializar función de persistencia:', error);
+      persistFn = createSupabasePersistFn(deps.supabaseClient);
+      console.warn('⚠️ Usando función de persistencia estándar como fallback');
+    }
+  }
   
   // Create primitive authentication function - with mock for development/testing
   const authenticate = (() => {
@@ -423,7 +469,7 @@ const createExternalServiceFunctions = (deps) => {
 /**
  * Sets up API routes
  */
-export const setupApiRoutes = (deps) => {
+const setupApiRoutes = async (deps) => {
   // console.log('Setting up API routes with dependencies:', deps);
   const router = new Router();
   
@@ -431,11 +477,11 @@ export const setupApiRoutes = (deps) => {
   router.use(bodyParser());
   
   // Create primitive functions for external services
-  const serviceFunctions = createExternalServiceFunctions(deps);
+  const serviceFunctions = await createExternalServiceFunctions(deps);
   
   // --- Command endpoint (centralized) ---
-  router.post('/commands', async (ctx) => {
-    console.log('Request received at /commands');
+  router.post('/api/commands', async (ctx) => {
+    console.log('Request received at /api/commands');
     const timestamp = new Date().toISOString();
     
     // Use forward-composition pipeline with Promises
@@ -893,8 +939,7 @@ export const setupApiRoutes = (deps) => {
       ctx.status = 500;
       ctx.body = deepFreeze({ 
         error: error.message || 'Failed to fetch accounts',
-        details: error.stack,
-        timestamp: new Date().toISOString()
+        stack: error.stack 
       });
     }
   }));
@@ -1076,7 +1121,7 @@ export const setupApiRoutes = (deps) => {
   }));
 
   // --- Zoho Ticket API Endpoints ---
-
+  
   // Get filtered tickets
   router.get('/api/tickets', withCors(async (ctx) => {
     try {
@@ -1291,6 +1336,125 @@ export const setupApiRoutes = (deps) => {
     }
   });
   
+  // Endpoint para validar si un email corresponde a un contacto en Zoho CRM
+  router.post('/api/zoho/validate-contact', withCors(async (ctx) => {
+    try {
+      const { email } = ctx.request.body;
+      
+      if (!email) {
+        ctx.status = 400;
+        ctx.body = { 
+          success: false, 
+          message: 'Email is required' 
+        };
+        return;
+      }
+      
+      // Usar el servicio de validación de contactos de Zoho
+      const contactResult = await zohoProxyService.searchContactByEmail(email);
+      
+      if (!contactResult || !contactResult.data || contactResult.data.length === 0) {
+        ctx.status = 404;
+        ctx.body = { 
+          success: false, 
+          message: 'Email not registered as a contact in Zoho CRM' 
+        };
+        return;
+      }
+      
+      const contact = contactResult.data[0];
+      
+      // Validar que el contacto tenga un ID
+      if (!contact.id) {
+        ctx.status = 400;
+        ctx.body = { 
+          success: false, 
+          message: 'Contact exists but is invalid (missing ID)' 
+        };
+        return;
+      }
+      
+      // Si todo está bien, responder con éxito
+      ctx.status = 200;
+      ctx.body = { 
+        success: true, 
+        contactId: contact.id,
+        accountId: contact.accountId || null,
+        fullName: contact.fullName || (contact.firstName && contact.lastName ? `${contact.firstName} ${contact.lastName}` : email.split('@')[0])
+      };
+    } catch (error) {
+      console.error('Error validando contacto:', error);
+      ctx.status = 500;
+      ctx.body = { 
+        success: false, 
+        message: 'Error validating contact in Zoho CRM' 
+      };
+    }
+  }));
+  
+  // Endpoint para generar tokens de acceso después de autenticación social
+  router.post('/api/auth/social-token', withCors(async (ctx) => {
+    try {
+      const { email, supabaseId, provider } = ctx.request.body;
+      
+      if (!email || !supabaseId) {
+        ctx.status = 400;
+        ctx.body = { 
+          success: false, 
+          message: 'Email and supabaseId are required' 
+        };
+        return;
+      }
+      
+      // Primero validamos que el email corresponde a un contacto de Zoho CRM
+      const contactResult = await zohoProxyService.searchContactByEmail(email);
+      
+      if (!contactResult || !contactResult.data || contactResult.data.length === 0) {
+        ctx.status = 403;
+        ctx.body = { 
+          success: false, 
+          message: 'Email not registered as a contact in Zoho CRM' 
+        };
+        return;
+      }
+      
+      const contact = contactResult.data[0];
+      
+      // Generar tokens de acceso usando el servicio de autenticación
+      import('../services/authService.js').then(authService => {
+        // Crear respuesta de autenticación
+        const authResponse = authService.createAuthResponse(email);
+        
+        // Responder con los tokens
+        ctx.status = 200;
+        ctx.body = {
+          success: true,
+          email,
+          provider,
+          supabaseId,
+          accessToken: authResponse.accessToken,
+          refreshToken: authResponse.refreshToken,
+          zoho_contact_id: contact.id,
+          zoho_account_id: contact.accountId || null
+        };
+      }).catch(error => {
+        console.error('Error generando tokens:', error);
+        ctx.status = 500;
+        ctx.body = { 
+          success: false, 
+          message: 'Error generating authentication tokens' 
+        };
+      });
+    } catch (error) {
+      console.error('Error en autenticación social:', error);
+      ctx.status = 500;
+      ctx.body = { 
+        success: false, 
+        message: 'Error processing social authentication' 
+      };
+    }
+  }));
+
   return router;
 };
 
@@ -1299,16 +1463,41 @@ export const setupApiRoutes = (deps) => {
  * @param {Object} app - Koa app instance
  * @param {Object} deps - Dependencies
  */
-export const initializeApi = (app, deps = {}) => {
-  // Setup CORS headers for all routes
+export const initializeApi = async (app, deps = {}) => {
+  // Configuración CORS unificada para todas las rutas
   app.use(async (ctx, next) => {
-    ctx.set('Access-Control-Allow-Origin', '*');
+    // Origen específico para permitir credenciales
+    const requestOrigin = ctx.request.header.origin;
+    const allowedOrigins = [
+      'http://localhost:5172',
+      'https://localhost:5172',
+      'http://localhost:5173',
+      'https://localhost:5173'
+    ];
+    
+    // Permitir orígenes específicos
+    if (allowedOrigins.includes(requestOrigin)) {
+      ctx.set('Access-Control-Allow-Origin', requestOrigin);
+      ctx.set('Access-Control-Allow-Credentials', 'true');
+    } else {
+      // Para solicitudes de fuentes como curl sin origen, usar '*'
+      ctx.set('Access-Control-Allow-Origin', '*');
+    }
+    
+    // Headers comunes para todas las solicitudes
     ctx.set('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
     ctx.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    ctx.set('Access-Control-Expose-Headers', 'Content-Length, Date, X-Request-Id');
+    
+    // Responder inmediatamente a OPTIONS
     if (ctx.method === 'OPTIONS') {
       ctx.status = 204;
       return;
     }
+    
+    // Log para depuración
+    console.log(`🔒 CORS Request from: ${requestOrigin || 'Unknown Origin'} to ${ctx.path}`);
+    
     await next();
   });
 
@@ -1316,7 +1505,7 @@ export const initializeApi = (app, deps = {}) => {
   app.use(bodyParser());
   
   // Setup API routes
-  const apiRouter = setupApiRoutes(deps);
+  const apiRouter = await setupApiRoutes(deps);
   
   // Setup projection routes
   const projectionRouter = setupProjectionRoutes();

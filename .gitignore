@@ -19,9 +19,9 @@ temp/
 Thumbs.db
 
 # Entorno
-.env
-.env.local
-.env.*.local
+# .env
+# .env.local
+# .env.*.local
 
 # Logs
 logs/
