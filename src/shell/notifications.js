@@ -11,7 +11,7 @@ import {
   tryCatch, 
   tryCatchAsync, 
   deepFreeze, 
-  pipe, 
+  pipe, // Importación de pipe para el pipeline funcional
   pipeAsync,
   extractErrorInfo
 } from '../utils/functional.js';
@@ -754,368 +754,254 @@ const handleUnhandled = (event, deps) => (error) => {
   return handleFailedLogin(event, authResult, deps);
 };
 
+/**
+ * Authentication pipeline curried function for Supabase login
+ * @param {NotificationDeps} deps - Dependencies for notification operations
+ * @returns {Function} - Function that takes an event and authenticates with Supabase
+ */
 const authenticateWithSupabase = (deps) => async (event) => {
   console.log('[SUPABASE] Authenticating user with Supabase:', event.email);
   
-  try {
-    // Importar la función confirmUserEmail y getSupabaseAdminClient
-    const { confirmUserEmail } = await import('../services/registrationService.js');
-    const { getSupabaseAdminClient } = await import('./config.js');
-    
-    // Obtener el cliente admin de Supabase
-    const adminClient = getSupabaseAdminClient();
-    
-    if (!adminClient) {
-      console.error('[SUPABASE] Admin client not available');
-      throw new Error('Admin client not available');
-    }
-    
-    // Buscar el usuario por email usando la API admin
-    const { data: { users = [] }, error: listError } = await adminClient.auth.admin.listUsers({
-      filters: {
-        email: event.email
-      }
-    });
-    
-    if (listError) {
-      console.error('[SUPABASE] Error listing users:', listError);
-      throw listError;
-    }
-    
-    const user = users.find(u => u.email === event.email);
-    
-    if (user && user.id) {
-      console.log('[SUPABASE] Found user ID:', user.id);
-      
-      // Intentar confirmar el email
-      const confirmed = await confirmUserEmail(user.id, event.email);
-      
-      if (confirmed) {
-        console.log('[SUPABASE] Email confirmed successfully, retrying login...');
-        
-        // Reintentar el login directamente con Supabase
-        try {
-          // Crear un cliente de Supabase con la clave anónima para simular login del usuario
-          const { createClient } = await import('@supabase/supabase-js');
-          const supabaseClient = createClient(
-            process.env.SUPABASE_URL,
-            process.env.SUPABASE_ANON_KEY
-          );
-          
-          // Realizar login directamente
-          const { data, error } = await supabaseClient.auth.signInWithPassword({
-            email: event.email,
-            password: event.password
-          });
-          
-          if (error) {
-            console.error('[SUPABASE] Direct retry authentication error:', error);
-            return Promise.reject({
-              reason: 'Invalid credentials',
-              errorCode: 'INVALID_CREDENTIALS',
-              errorDetails: error
-            });
-          }
-          
-          if (!data || !data.user) {
-            console.error('[SUPABASE] No user data returned on direct retry');
-            return Promise.reject({
-              reason: 'Authentication failed',
-              errorCode: 'AUTH_FAILED',
-              errorDetails: { message: 'No user data returned from authentication service on direct retry' }
-            });
-          }
-          
-          console.log('[SUPABASE] Authentication successful for user on direct retry:', data.user.id);
-          
-          // Crear evento LOGIN_SUCCEEDED
-          const loginSucceededEvent = deepFreeze({
-            type: 'LOGIN_SUCCEEDED',
-            userId: data.user.id,
-            email: data.user.email,
-            userDetails: data.user,
-            session: data.session,
-            timestamp: event.timestamp || new Date().toISOString()
-          });
-          
-          // Almacenar el evento de inicio de sesión exitoso
-          if (deps && deps.storeEvent) {
-            try {
-              await deps.storeEvent(loginSucceededEvent);
-              console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
-            } catch (storeErr) {
-              console.error('[LOGIN] Failed to store LOGIN_SUCCEEDED event:', storeErr);
-            }
-          }
-          
-          return loginSucceededEvent;
-        } catch (error) {
-          console.error('[SUPABASE] Unexpected error during direct retry authentication:', error);
-          return Promise.reject({
-            reason: 'Authentication failed',
-            errorCode: 'AUTH_FAILED',
-            errorDetails: extractErrorInfo(error)
-          });
-        }
-      }
-    } else {
-      console.error('[SUPABASE] Could not find user ID for email:', event.email);
-    }
-    
-    // Usar Supabase Auth para iniciar sesión
-    const result = await deps.supabaseAuth.signIn(event.email, event.password);
-    
-    if (result.isError) {
-      const error = result.unwrapError();
-      console.error('[SUPABASE] Authentication error:', error);
-      
-      // Verificar si el error es "email_not_confirmed"
-      if (error && (error.code === 'email_not_confirmed' || (error.details && error.details.errorCode === 'email_not_confirmed'))) {
-        console.log('[SUPABASE] Email not confirmed, attempting to confirm it manually...');
-        
-        try {
-          // Importar la función confirmUserEmail
-          const { confirmUserEmail } = await import('../services/registrationService.js');
-          
-          // Obtener el ID del usuario
-          const { data: userData } = await deps.supabaseClient
-            .from('users')
-            .select('id')
-            .eq('email', event.email)
-            .single();
-          
-          if (userData && userData.id) {
-            console.log('[SUPABASE] Found user ID:', userData.id);
-            
-            // Intentar confirmar el email
-            const confirmed = await confirmUserEmail(userData.id, event.email);
-            
-            if (confirmed) {
-              console.log('[SUPABASE] Email confirmed successfully, retrying login...');
-              
-              // Reintentar el login directamente con Supabase
-              try {
-                // Crear un cliente de Supabase con la clave anónima para simular login del usuario
-                const { createClient } = await import('@supabase/supabase-js');
-                const supabaseClient = createClient(
-                  process.env.SUPABASE_URL,
-                  process.env.SUPABASE_ANON_KEY
-                );
-                
-                // Realizar login directamente
-                const { data, error } = await supabaseClient.auth.signInWithPassword({
-                  email: event.email,
-                  password: event.password
-                });
-                
-                if (error) {
-                  console.error('[SUPABASE] Direct retry authentication error:', error);
-                  return Promise.reject({
-                    reason: 'Invalid credentials',
-                    errorCode: 'INVALID_CREDENTIALS',
-                    errorDetails: error
-                  });
-                }
-                
-                if (!data || !data.user) {
-                  console.error('[SUPABASE] No user data returned on direct retry');
-                  return Promise.reject({
-                    reason: 'Authentication failed',
-                    errorCode: 'AUTH_FAILED',
-                    errorDetails: { message: 'No user data returned from authentication service on direct retry' }
-                  });
-                }
-                
-                console.log('[SUPABASE] Authentication successful for user on direct retry:', data.user.id);
-                
-                // Crear evento LOGIN_SUCCEEDED
-                const loginSucceededEvent = deepFreeze({
-                  type: 'LOGIN_SUCCEEDED',
-                  userId: data.user.id,
-                  email: data.user.email,
-                  userDetails: data.user,
-                  session: data.session,
-                  timestamp: event.timestamp || new Date().toISOString()
-                });
-                
-                // Almacenar el evento de inicio de sesión exitoso
-                if (deps && deps.storeEvent) {
-                  try {
-                    await deps.storeEvent(loginSucceededEvent);
-                    console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
-                  } catch (storeErr) {
-                    console.error('[LOGIN] Failed to store LOGIN_SUCCEEDED event:', storeErr);
-                  }
-                }
-                
-                return loginSucceededEvent;
-              } catch (error) {
-                console.error('[SUPABASE] Unexpected error during direct retry authentication:', error);
-                return Promise.reject({
-                  reason: 'Authentication failed',
-                  errorCode: 'AUTH_FAILED',
-                  errorDetails: extractErrorInfo(error)
-                });
-              }
-            }
-          } else {
-            console.error('[SUPABASE] Could not find user ID for email:', event.email);
-          }
-        } catch (confirmError) {
-          console.error('[SUPABASE] Error confirming email:', confirmError);
-        }
-      }
-      
-      return Promise.reject({
-        reason: 'Invalid credentials',
-        errorCode: 'INVALID_CREDENTIALS',
-        errorDetails: error
-      });
-    }
-    
-    const userData = result;
-    
-    if (!userData || !userData.userId) {
-      console.error('[SUPABASE] No user data returned');
-      return Promise.reject({
-        reason: 'Authentication failed',
-        errorCode: 'AUTH_FAILED',
-        errorDetails: { message: 'No user data returned from authentication service' }
-      });
-    }
-    
-    console.log('[SUPABASE] Authentication successful for user:', userData.userId);
-    
-    // Crear evento LOGIN_SUCCEEDED
-    const loginSucceededEvent = deepFreeze({
-      type: 'LOGIN_SUCCEEDED',
-      userId: userData.userId,
-      email: userData.email,
-      userDetails: userData.userDetails,
-      session: userData.session,
-      timestamp: event.timestamp || new Date().toISOString()
-    });
-    
-    // Almacenar el evento de inicio de sesión exitoso
-    if (deps && deps.storeEvent) {
+  // Pipeline funcional para autenticación
+  return pipeAsync(
+    // 1. Importar dependencias y crear cliente Supabase
+    async () => {
       try {
-        await deps.storeEvent(loginSucceededEvent);
-        console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
-      } catch (storeErr) {
-        console.error('[LOGIN] Failed to store LOGIN_SUCCEEDED event:', storeErr);
-      }
-    }
-    
-    return loginSucceededEvent;
-  } catch (error) {
-    console.error('[SUPABASE] Unexpected error during authentication:', error);
-    
-    // Verificar si el error es "email_not_confirmed" también aquí
-    if (error && (error.code === 'email_not_confirmed' || 
-        (error.details && error.details.errorCode === 'email_not_confirmed') ||
-        (error.message && error.message.includes('Email not confirmed')))) {
-      
-      console.log('[SUPABASE] Email not confirmed (catch block), attempting to confirm it manually...');
-      
-      try {
-        // Importar la función confirmUserEmail
+        const { createClient } = await import('@supabase/supabase-js');
+        const { getSupabaseAdminClient } = await import('./config.js');
         const { confirmUserEmail } = await import('../services/registrationService.js');
         
-        // Obtener el ID del usuario
-        const { data: userData } = await deps.supabaseClient
-          .from('users')
-          .select('id')
-          .eq('email', event.email)
-          .single();
+        // Crear cliente Supabase con clave anónima (como en registro)
+        const supabaseClient = createClient(
+          process.env.SUPABASE_URL, 
+          process.env.SUPABASE_ANON_KEY
+        );
         
-        if (userData && userData.id) {
-          console.log('[SUPABASE] Found user ID:', userData.id);
-          
-          // Intentar confirmar el email
-          const confirmed = await confirmUserEmail(userData.id, event.email);
-          
-          if (confirmed) {
-            console.log('[SUPABASE] Email confirmed successfully, retrying login...');
-            
-            // Reintentar el login directamente con Supabase
-            try {
-              // Crear un cliente de Supabase con la clave anónima para simular login del usuario
-              const { createClient } = await import('@supabase/supabase-js');
-              const supabaseClient = createClient(
-                process.env.SUPABASE_URL,
-                process.env.SUPABASE_ANON_KEY
-              );
-              
-              // Realizar login directamente
-              const { data, error } = await supabaseClient.auth.signInWithPassword({
-                email: event.email,
-                password: event.password
-              });
-              
-              if (error) {
-                console.error('[SUPABASE] Direct retry authentication error:', error);
-                return Promise.reject({
-                  reason: 'Invalid credentials',
-                  errorCode: 'INVALID_CREDENTIALS',
-                  errorDetails: error
-                });
-              }
-              
-              if (!data || !data.user) {
-                console.error('[SUPABASE] No user data returned on direct retry');
-                return Promise.reject({
-                  reason: 'Authentication failed',
-                  errorCode: 'AUTH_FAILED',
-                  errorDetails: { message: 'No user data returned from authentication service on direct retry' }
-                });
-              }
-              
-              console.log('[SUPABASE] Authentication successful for user on direct retry:', data.user.id);
-              
-              // Crear evento LOGIN_SUCCEEDED
-              const loginSucceededEvent = deepFreeze({
-                type: 'LOGIN_SUCCEEDED',
-                userId: data.user.id,
-                email: data.user.email,
-                userDetails: data.user,
-                session: data.session,
-                timestamp: event.timestamp || new Date().toISOString()
-              });
-              
-              // Almacenar el evento de inicio de sesión exitoso
-              if (deps && deps.storeEvent) {
-                try {
-                  await deps.storeEvent(loginSucceededEvent);
-                  console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
-                } catch (storeErr) {
-                  console.error('[LOGIN] Failed to store LOGIN_SUCCEEDED event:', storeErr);
-                }
-              }
-              
-              return loginSucceededEvent;
-            } catch (error) {
-              console.error('[SUPABASE] Unexpected error during direct retry authentication:', error);
-              return Promise.reject({
-                reason: 'Authentication failed',
-                errorCode: 'AUTH_FAILED',
-                errorDetails: extractErrorInfo(error)
-              });
-            }
-          }
-        } else {
-          console.error('[SUPABASE] Could not find user ID for email:', event.email);
+        return Result.ok({
+          supabaseClient,
+          getSupabaseAdminClient,
+          confirmUserEmail,
+          event
+        });
+      } catch (error) {
+        console.error('[SUPABASE] Error importando dependencias:', error);
+        return Result.error(error);
+      }
+    },
+    
+    // 2. Intentar login con credenciales
+    async (result) => {
+      if (result.isError) return result;
+      
+      const { supabaseClient, event } = result.unwrap();
+      console.log('[SUPABASE] Intentando login con credenciales:', event.email);
+      
+      try {
+        // Usamos el mismo método que el frontend usa para login
+        const loginResponse = await supabaseClient.auth.signInWithPassword({
+          email: event.email,
+          password: event.password // Usar contraseña tal como viene del frontend
+        });
+        
+        if (loginResponse.error) {
+          console.error('[SUPABASE] Error en signInWithPassword:', loginResponse.error);
+          return Result.error({
+            ...result.unwrap(),
+            error: loginResponse.error
+          });
         }
-      } catch (confirmError) {
-        console.error('[SUPABASE] Error confirming email:', confirmError);
+        
+        console.log('[SUPABASE] Login exitoso en primer intento');
+        return Result.ok({
+          ...result.unwrap(),
+          authData: loginResponse.data
+        });
+      } catch (error) {
+        console.error('[SUPABASE] Excepción en signInWithPassword:', error);
+        return Result.error({
+          ...result.unwrap(),
+          error
+        });
+      }
+    },
+    
+    // 3. Si falla, verificar si es por email no confirmado
+    async (result) => {
+      if (result.isOk) return result;
+      
+      const { error, ...context } = result.unwrapError();
+      
+      // Verificar si el error es por email no confirmado
+      if (error?.message?.includes('Email not confirmed')) {
+        console.log('[SUPABASE] Email no confirmado, intentando confirmar:', context.event.email);
+        
+        try {
+          // Obtener ID de usuario para confirmar email
+          const adminClient = context.getSupabaseAdminClient();
+          const { data: users } = await adminClient.auth.admin.listUsers({
+            filters: [{ property: 'email', operator: 'eq', value: context.event.email }]
+          });
+          
+          const user = users?.users?.[0] || null;
+          
+          if (!user) {
+            console.error('[SUPABASE] No se encontró usuario para confirmar email');
+            return Result.error({
+              ...context,
+              error: new Error('User not found for email confirmation')
+            });
+          }
+          
+          // Confirmar email con la función que sí funciona en registro
+          const confirmed = await context.confirmUserEmail(adminClient, user.id, context.event.email);
+          
+          if (!confirmed) {
+            console.error('[SUPABASE] No se pudo confirmar email');
+            return Result.error({
+              ...context,
+              error: new Error('Email confirmation failed')
+            });
+          }
+          
+          console.log('[SUPABASE] Email confirmado, reintentando login');
+          
+          // Reintentar login después de confirmar email
+          const loginResponse = await context.supabaseClient.auth.signInWithPassword({
+            email: context.event.email,
+            password: context.event.password
+          });
+          
+          if (loginResponse.error) {
+            console.error('[SUPABASE] Error en segundo intento de login:', loginResponse.error);
+            return Result.error({
+              ...context,
+              error: loginResponse.error
+            });
+          }
+          
+          console.log('[SUPABASE] Login exitoso después de confirmar email');
+          return Result.ok({
+            ...context,
+            authData: loginResponse.data
+          });
+        } catch (confirmError) {
+          console.error('[SUPABASE] Error en el proceso de confirmación:', confirmError);
+          return Result.error({
+            ...context,
+            error: confirmError
+          });
+        }
+      }
+      
+      // Si no es error de confirmación, devolver el error original
+      return Result.error({
+        ...context,
+        error
+      });
+    },
+    
+    // 4. Extraer datos de Zoho y crear resultado de autenticación
+    async (result) => {
+      if (result.isError) {
+        const { error } = result.unwrapError();
+        return Result.error(error);
+      }
+      
+      const { authData, event } = result.unwrap();
+      
+      // Verificar que tenemos datos válidos
+      if (!authData?.user) {
+        console.error('[SUPABASE] Datos de autenticación inválidos');
+        return Result.error(new Error('Invalid authentication data'));
+      }
+      
+      const user = authData.user;
+      const session = authData.session;
+      
+      // Extraer datos de Zoho de forma robusta y consistente
+      const identities = Array.isArray(user.identities) ? user.identities : [];
+      const identity = identities.length > 0 ? identities[0] : {};
+      const identityData = identity.identity_data || {};
+      const metadata = user.user_metadata || {};
+      
+      // Crear resultado de autenticación consistente (como en registro)
+      const loginResult = {
+        userId: user.id,
+        email: user.email || event.email,
+        userDetails: user,
+        session,
+        zoho_contact_id: identityData.zoho_contact_id || metadata.zoho_contact_id || '',
+        zoho_account_id: identityData.zoho_account_id || metadata.zoho_account_id || '',
+        fullName: identityData.full_name || metadata.full_name || '',
+        companyName: identityData.company_name || metadata.company_name || ''
+      };
+      
+      console.log('[SUPABASE] Autenticación exitosa con datos de Zoho:', 
+        loginResult.zoho_contact_id ? 'presentes' : 'no encontrados');
+      
+      return Result.ok(loginResult);
+    },
+    
+    // 5. Generar y almacenar evento LOGIN_SUCCEEDED
+    async (loginResult) => {
+      if (loginResult.isError) return loginResult;
+      
+      const authData = loginResult.unwrap();
+      
+      // Crear evento LOGIN_SUCCEEDED inmutable
+      const loginSucceededEvent = deepFreeze({
+        type: 'LOGIN_SUCCEEDED',
+        userId: authData.userId,
+        email: authData.email,
+        zoho_contact_id: authData.zoho_contact_id,
+        zoho_account_id: authData.zoho_account_id,
+        fullName: authData.fullName,
+        companyName: authData.companyName,
+        userDetails: authData.userDetails,
+        session: authData.session,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Almacenar evento
+      if (deps && deps.storeEvent) {
+        try {
+          await deps.storeEvent(loginSucceededEvent);
+          console.log('[LOGIN] LOGIN_SUCCEEDED event stored successfully');
+        } catch (storeError) {
+          console.error('[LOGIN] Error almacenando LOGIN_SUCCEEDED:', storeError);
+          // Continuar aunque haya error al almacenar
+        }
+      }
+      
+      // Generar tokens y crear evento PROFILE_UPDATED
+      console.log('[LOGIN] Generating tokens and profile update for successful login');
+      return await handleLoginSucceeded(loginSucceededEvent, deps);
+    }
+  )().catch(error => {
+    console.error('[SUPABASE] Error fatal en pipeline de autenticación:', error);
+    
+    // Crear evento LOGIN_FAILED con información detallada
+    const failedEvent = deepFreeze({
+      type: 'LOGIN_FAILED',
+      email: event.email,
+      reason: error.message || 'Authentication pipeline failed',
+      details: extractErrorInfo(error),
+      timestamp: new Date().toISOString()
+    });
+    
+    // Intentar almacenar evento de fallo
+    if (deps && deps.storeEvent) {
+      try {
+        deps.storeEvent(failedEvent).catch(e => 
+          console.error('[LOGIN] Error almacenando LOGIN_FAILED:', e)
+        );
+      } catch (e) {
+        console.error('[LOGIN] Error crítico almacenando LOGIN_FAILED:', e);
       }
     }
     
-    return Promise.reject({
-      reason: 'Authentication failed',
-      errorCode: 'AUTH_FAILED',
-      errorDetails: extractErrorInfo(error)
-    });
-  }
+    return Result.error(error);
+  });
 };
 
 /**
@@ -1176,15 +1062,27 @@ const handleFailedLogin = async (event, authResult, deps) => {
  * @returns {Promise<r>} - Result containing the LOGIN_SUCCEEDED event with tokens
  */
 const handleSuccessfulLogin = async (event, authResult, deps) => {
-  // Crear evento LOGIN_SUCCEEDED (patrón inmutable)
+  // Extract Zoho data from user metadata or identities if available
+  const userDetails = authResult.userDetails || {};
+  const identities = Array.isArray(userDetails.identities) ? userDetails.identities : [];
+  const identity = identities.length > 0 ? identities[0] : {};
+  const identityData = identity.identity_data || {};
+  const metadata = userDetails.user_metadata || {};
+  
+  // Crear evento LOGIN_SUCCEEDED (patrón inmutable) with consistent Zoho data
   const loginSucceededEvent = deepFreeze({
     type: 'LOGIN_SUCCEEDED',
-    userId: event.userId,
+    userId: event.userId || userDetails.id,
     email: event.email,
     zohoUserId: authResult.userId,
+    zoho_contact_id: identityData.zoho_contact_id || metadata.zoho_contact_id || '',
+    zoho_account_id: identityData.zoho_account_id || metadata.zoho_account_id || '',
+    fullName: identityData.full_name || metadata.full_name || '',
+    companyName: identityData.company_name || metadata.company_name || '',
     userDetails: authResult.userDetails,
+    session: authResult.session,
     companies: authResult.companies || [],
-    timestamp: event.timestamp
+    timestamp: event.timestamp || new Date().toISOString()
   });
   
   console.log('Login succeeded, storing event');
@@ -1208,299 +1106,6 @@ const handleSuccessfulLogin = async (event, authResult, deps) => {
 };
 
 /**
- * Verifies user credentials
- * Returns a Result with authentication result with user ID if successful
- * @param {string} email - User email
- * @param {string} password - User password
- * @param {NotificationDeps} deps - Dependencies for notification operations
- * @returns {Promise<r>} - Result containing authentication result
- */
-const verifyCredentials = async (email, password, deps) => {
-  console.log('[AUTH] Authenticating user:', email);
-  
-  // Verificar si estamos en modo de simulación forzada
-  const isForcedMockMode = process.env.FORCE_MOCK_AUTH === 'true';
-  const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
-  const isMockAuth = process.env.MOCK_AUTH === 'true';
-  
-  // Credenciales válidas para modo de simulación
-  const validMockCredentials = [
-    { email: 'admin@example.com', password: 'admin123' },
-    { email: 'user@example.com', password: 'user123' },
-    { email: 'itadmin@advancio.com', password: 'password123' }
-  ];
-  
-  // Si estamos en modo de simulación forzada, verificar credenciales contra la lista de credenciales válidas
-  if (isForcedMockMode || (!deps.supabaseAuth && (isDevelopment || isMockAuth))) {
-    console.log('[AUTH] Using mock authentication mode');
-    
-    // Verificar si las credenciales son válidas
-    const isValidCredential = validMockCredentials.some(
-      cred => cred.email === email && cred.password === password
-    );
-    
-    if (!isValidCredential) {
-      console.error('[AUTH] Invalid mock credentials');
-      throw new Error(JSON.stringify({
-        status: 401,
-        message: 'Invalid login credentials',
-        details: { 
-          errorCode: 'invalid_credentials', 
-          message: 'Invalid login credentials'
-        }
-      }));
-    }
-    
-    console.log('[AUTH] Mock authentication successful');
-    return Result.ok({
-      isAuthenticated: true,
-      email,
-      userDetails: {
-        id: email,
-        email,
-        name: email.split('@')[0],
-        role: email.includes('admin') ? 'admin' : 'user'
-      },
-      companies: [
-        { id: 'mock-company-1', name: 'Mock Company 1' },
-        { id: 'mock-company-2', name: 'Mock Company 2' }
-      ],
-      session: { token: 'mock-session-token' }
-    });
-  }
-  
-  // 1. Verificar disponibilidad del servicio de autenticación
-  const checkAuthService = () => {
-    if (!deps || !deps.supabaseAuth || typeof deps.supabaseAuth.signIn !== 'function') {
-      console.error('[AUTH] Supabase authentication service not available');
-      return Result.ok({
-        isAuthenticated: false,
-        reason: 'Authentication service not available',
-        errorCode: 'SERVICE_UNAVAILABLE'
-      });
-    }
-    return null; // Continuar con el pipeline
-  };
-  
-  // 2. Preparar los datos de autenticación
-  const prepareAuthData = () => {
-    console.log('[AUTH] Preparing authentication data');
-    return { email, password };
-  };
-  
-  // 3. Autenticar con Supabase
-  const authenticateWithSupabase = async (authData) => {
-    if (!authData) return null; // Si hay un error previo, pasar al siguiente paso
-    
-    try {
-      console.log('[SUPABASE] Authenticating user with Supabase:', authData.email);
-      const result = await deps.supabaseAuth.signIn(authData.email, authData.password);
-      
-      // Si result es un Result con error, lanzar el error para que sea manejado
-      if (result.isError) {
-        console.error('[SUPABASE] Authentication error in Result:', result.unwrapError());
-        throw result.unwrapError();
-      }
-      
-      console.log('[SUPABASE] Authentication result:', result);
-      
-      // Verificar que el resultado tenga los datos necesarios
-      if (!result || !result.userId) {
-        console.error('[SUPABASE] Invalid authentication result format');
-        throw new Error(JSON.stringify({
-          status: 401,
-          message: 'Authentication failed - invalid result format',
-          details: { 
-            errorCode: 'INVALID_RESULT_FORMAT', 
-            message: 'Authentication service returned an invalid result format'
-          }
-        }));
-      }
-      
-      return result;
-    } catch (error) {
-      console.error('[SUPABASE] Authentication error:', error);
-      // Propagar el error para que sea manejado por handleAuthError
-      throw error;
-    }
-  };
-  
-  // 4. Verificar si el usuario existe en Zoho CRM
-  const verifyUserInZoho = async (supabaseResult) => {
-    if (!supabaseResult) {
-      console.log('[ZOHO] Skipping Zoho verification - authentication failed in previous step');
-      return null; // Si hay un error previo, pasar al siguiente paso
-    }
-    
-    // Verificar que tengamos el email necesario para la verificación en Zoho
-    if (!supabaseResult.email) {
-      console.error('[ZOHO] Cannot verify user in Zoho - missing email');
-      throw new Error(JSON.stringify({
-        status: 400,
-        message: 'Cannot verify user in Zoho - missing email',
-        details: { 
-          errorCode: 'MISSING_EMAIL', 
-          message: 'Email is required for Zoho verification'
-        }
-      }));
-    }
-    
-    try {
-      console.log('[N8N] Verifying user exists in Zoho CRM for email:', supabaseResult.email);
-      return {
-        ...supabaseResult,
-        zohoData: await deps.n8nClient.verifyZohoContact(supabaseResult.email)
-      };
-    } catch (error) {
-      console.error('[N8N] User verification error:', error);
-      // Si el usuario no existe en Zoho, lanzar error de negocio
-      throw new Error(JSON.stringify({
-        status: 403,
-        message: 'User not registered in CRM system',
-        details: { 
-          errorCode: 'USER_NOT_IN_CRM', 
-          message: 'User authenticated but not registered in CRM system'
-        }
-      }));
-    }
-  };
-  
-  // 5. Obtener compañías asociadas al usuario
-  const getUserCompanies = async (userData) => {
-    if (!userData) {
-      console.log('[N8N] Skipping company retrieval - authentication failed in previous step');
-      return null; // Si hay un error previo, pasar al siguiente paso
-    }
-    
-    // Verificar que tengamos los datos de Zoho necesarios
-    if (!userData.zohoData || !userData.zohoData.userId) {
-      console.warn('[N8N] Cannot get companies - missing Zoho user ID');
-      // Continuar con el flujo pero sin compañías
-      return {
-        ...userData,
-        companies: []
-      };
-    }
-    
-    try {
-      console.log('[N8N] Getting companies for user:', userData.zohoData.userId);
-      const companiesResult = await deps.n8nClient.getUserCompanies(userData.zohoData.userId);
-      
-      return {
-        ...userData,
-        companies: companiesResult.companies
-      };
-    } catch (error) {
-      console.warn('[N8N] Error getting companies:', error);
-      // Si hay error al obtener compañías, continuar pero con lista vacía
-      return {
-        ...userData,
-        companies: []
-      };
-    }
-  };
-  
-  // 6. Procesar el resultado final
-  const processAuthResult = (authData) => {
-    if (!authData) {
-      console.log('[AUTH] No authentication data available, authentication failed');
-      return Result.ok({
-        isAuthenticated: false,
-        reason: 'Authentication failed',
-        errorCode: 'AUTH_FAILED',
-        errorDetails: { message: 'Authentication pipeline returned no data' }
-      });
-    }
-    
-    // Verificar que tengamos los datos necesarios para considerar la autenticación exitosa
-    if (!authData.email) {
-      console.log('[AUTH] Missing required authentication data, authentication failed');
-      return Result.ok({
-        isAuthenticated: false,
-        reason: 'Authentication failed - missing required data',
-        errorCode: 'MISSING_AUTH_DATA',
-        errorDetails: { 
-          message: 'Authentication result is missing required data',
-          missingFields: !authData.email ? 'email' : 'unknown'
-        }
-      });
-    }
-    
-    console.log('[AUTH] Authentication successful, processing result');
-    return Result.ok({
-      isAuthenticated: true,
-      email: authData.email,
-      userDetails: {
-        ...authData.userDetails,
-        zohoDetails: authData.zohoData ? authData.zohoData.userDetails : undefined
-      },
-      companies: authData.companies || [],
-      session: authData.session
-    });
-  };
-  
-  // 7. Manejar errores de autenticación
-  const handleAuthError = (error) => {
-    console.error('[AUTH] Authentication error:', error);
-    
-    // Extraer información detallada del error
-    const errorInfo = extractErrorInfo(error);
-    console.log('[AUTH] Extracted error info:', errorInfo);
-    
-    // Determinar si el error contiene detalles JSON
-    let errorDetails = {};
-    try {
-      if (typeof error.message === 'string' && error.message.startsWith('{')) {
-        errorDetails = JSON.parse(error.message).details || {};
-      } else if (errorInfo.details) {
-        errorDetails = errorInfo.details;
-      }
-    } catch (e) {
-      console.error('[AUTH] Error parsing error details:', e);
-    }
-    
-    const errorMessage = errorDetails.message || error.message || 'Invalid credentials';
-    const errorCode = errorDetails.errorCode || 'AUTH_ERROR';
-    
-    console.log('[AUTH] Final error details:', { errorMessage, errorCode, errorDetails });
-    
-    return Result.ok({
-      isAuthenticated: false,
-      reason: errorMessage,
-      errorCode: errorCode,
-      errorDetails: errorDetails,
-      stackTrace: errorInfo.stack
-    });
-  };
-  
-  // Ejecutar el pipeline de autenticación
-  try {
-    // Verificar servicio de autenticación primero
-    const serviceCheck = checkAuthService();
-    if (serviceCheck) {
-      console.log('[AUTH] Service check failed:', serviceCheck.unwrap());
-      return serviceCheck;
-    }
-    
-    console.log('[AUTH] Starting authentication pipeline');
-    
-    // Ejecutar el pipeline con pipeAsync
-    return await tryCatchAsync(async () => {
-      return await pipeAsync(
-        prepareAuthData,
-        authenticateWithSupabase,
-        verifyUserInZoho,
-        getUserCompanies,
-        processAuthResult
-      )();
-    })().catch(handleAuthError);
-  } catch (error) {
-    console.error('[AUTH] Unhandled exception in verifyCredentials:', error);
-    return handleAuthError(error);
-  }
-};
-
-/**
  * Handles successful login events
  * Generates access and refresh tokens using JWT
  * @param {Object} event - Login succeeded event
@@ -1512,9 +1117,13 @@ const handleLoginSucceeded = async (event, deps) => {
     const accessToken = generateAccessToken(event.email);
     const refreshToken = generateRefreshToken(event.email);
     
-    // Create a new event with tokens (immutable pattern)
+    // Create a new event with tokens and consistent Zoho data (immutable pattern)
     const enrichedEvent = deepFreeze({
       ...event,
+      zoho_contact_id: event.zoho_contact_id || '',
+      zoho_account_id: event.zoho_account_id || '',
+      fullName: event.fullName || '',
+      companyName: event.companyName || '',
       accessToken,
       refreshToken
     });
@@ -1534,6 +1143,26 @@ const handleLoginSucceeded = async (event, deps) => {
     if (storeResult.isError) {
       console.error('Failed to store refresh token:', storeResult.unwrapError());
       // Continue even if token storage fails
+    }
+    
+    // Create and store a PROFILE_UPDATED event to ensure profile consistency
+    if (deps.storeEvent) {
+      try {
+        const profileEvent = deepFreeze({
+          type: 'PROFILE_UPDATED',
+          email: event.email,
+          userId: event.userId || event.userDetails.id,
+          zoho_contact_id: enrichedEvent.zoho_contact_id,
+          zoho_account_id: enrichedEvent.zoho_account_id,
+          fullName: enrichedEvent.fullName,
+          companyName: enrichedEvent.companyName,
+          timestamp: event.timestamp || new Date().toISOString()
+        });
+        
+        await deps.storeEvent(profileEvent);
+      } catch (error) {
+        console.error('Failed to store PROFILE_UPDATED event:', error);
+      }
     }
     
     return Result.ok(enrichedEvent);
@@ -1860,6 +1489,10 @@ const handleUserRegistrationRequested = async (event, deps) => {
       return failedEvent;
     }
     
+    // Extract contact data from verification result
+    const contactData = verifyResult.unwrap();
+    const contact = contactData.contact || {};
+    
     // Register user in Supabase
     const registerResult = await registerSupabaseUser(deps.supabaseAuth)(event.email, event.password);
     
@@ -1878,13 +1511,20 @@ const handleUserRegistrationRequested = async (event, deps) => {
       return failedEvent;
     }
     
-    // Create registration success event
+    // Create registration success event with Zoho data
     const successEvent = deepFreeze({
       type: 'REGISTRATION_SUCCEEDED',
       email: event.email,
       userId: registerResult.unwrap().userId,
+      zoho_contact_id: contact.id || '',
+      fullName: contact.name || '',
+      companyId: contact.accountId || '',
+      companyName: contact.accountName || '',
       timestamp: new Date().toISOString()
     });
+    
+    // Store the success event
+    await deps.storeEvent(successEvent);
     
     return successEvent;
   })();

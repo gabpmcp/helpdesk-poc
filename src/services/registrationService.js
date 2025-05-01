@@ -129,80 +129,110 @@ export const validateZohoContact = async (email) => {
 /**
  * Confirma manualmente el email de un usuario en Supabase
  * Utiliza múltiples métodos para garantizar que el email quede confirmado
+ * Implementa patrón funcional con pipeline de transformaciones
+ * @param {Object} adminClient - Cliente admin de Supabase (opcional)
  * @param {string} userId - ID del usuario en Supabase
- * @param {string} email - Email del usuario
+ * @param {string} email - Email del usuario (opcional)
  * @returns {Promise<boolean>} - true si se confirmó exitosamente, false en caso contrario
  */
-export const confirmUserEmail = async (userId, email) => {
-  if (!userId || !email) {
-    console.error('❌ confirmUserEmail: userId y email son requeridos');
+export const confirmUserEmail = async (adminClient, userId, email = null) => {
+  // Validación temprana para implementar patrón de "early validation"
+  if (!userId) {
+    console.error('❌ confirmUserEmail: userId es requerido');
     return false;
   }
 
-  console.log(`🔑 Confirmando manualmente el email del usuario ${email} (${userId})...`);
+  console.log(`🔑 Confirmando manualmente el email del usuario (${userId})...`);
   
-  // Crear un cliente de Supabase con la clave de servicio para tener permisos administrativos
-  const { createClient } = await import('@supabase/supabase-js');
-  const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
+  // Preparar cliente de Supabase - usar el proporcionado o crear uno nuevo
+  const getSupabaseClient = async () => {
+    // Si ya tenemos un cliente admin, lo usamos
+    if (adminClient) {
+      return adminClient;
     }
-  );
-  
-  let confirmed = false;
-  
-  // Método 1: Actualizar usuario con updateUserById
-  try {
-    console.log('🔄 Método 1: Confirmando email con updateUserById...');
-    const { error } = await supabase.auth.admin.updateUserById(
-      userId,
-      { 
-        email_confirm: true,
-        user_metadata: {
-          email_confirmed: true
-        }
-      }
-    );
     
-    if (error) {
-      console.error('❌ Error confirmando email con updateUserById:', error);
-    } else {
-      console.log('✅ Email confirmado exitosamente con updateUserById');
-      confirmed = true;
+    // Crear un cliente de Supabase con la clave de servicio
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      return createClient(
+        process.env.SUPABASE_URL,
+        process.env.SUPABASE_SERVICE_KEY,
+        {
+          auth: {
+            autoRefreshToken: false,
+            persistSession: false
+          }
+        }
+      );
+    } catch (error) {
+      console.error('❌ Error creando cliente Supabase:', error);
+      return null;
     }
-  } catch (error) {
-    console.error('❌ Error en confirmación con updateUserById:', error);
+  };
+  
+  // Obtener cliente Supabase
+  const supabase = await getSupabaseClient();
+  if (!supabase) {
+    console.error('❌ No se pudo obtener un cliente Supabase válido');
+    return false;
   }
   
+  // Implementamos pipeline de métodos para confirmación siguiendo patrón de composición funcional
+  // Cada método retorna una Promise<boolean> y se ejecutan en secuencia hasta que uno tenga éxito
+  
+  // Método 1: Actualizar usuario con updateUserById
+  const confirmWithUpdateUserById = async () => {
+    try {
+      console.log('🔄 Método 1: Confirmando email con updateUserById...');
+      const { error } = await supabase.auth.admin.updateUserById(
+        userId,
+        { 
+          email_confirm: true,
+          user_metadata: {
+            email_confirmed: true
+          }
+        }
+      );
+      
+      if (error) {
+        console.error('❌ Error confirmando email con updateUserById:', error);
+        return false;
+      }
+      
+      console.log('✅ Email confirmado exitosamente con updateUserById');
+      return true;
+    } catch (error) {
+      console.error('❌ Error en confirmación con updateUserById:', error);
+      return false;
+    }
+  };
+  
   // Método 2: Actualizar directamente en la base de datos
-  if (!confirmed) {
+  const confirmWithRPC = async () => {
     try {
       console.log('🔄 Método 2: Actualizando directamente en la base de datos...');
       
       // Ejecutar una consulta SQL para actualizar el campo email_confirmed_at
       const { error } = await supabase.rpc('admin_confirm_user_email', {
         p_user_id: userId,
-        p_email: email
+        p_email: email || ''
       });
       
       if (error) {
         console.error('❌ Error en RPC admin_confirm_user_email:', error);
-      } else {
-        console.log('✅ Email confirmado exitosamente con RPC');
-        confirmed = true;
+        return false;
       }
+      
+      console.log('✅ Email confirmado exitosamente con RPC');
+      return true;
     } catch (error) {
       console.error('❌ Error en actualización directa en DB:', error);
+      return false;
     }
-  }
+  };
   
   // Método 3: Usar la API REST directamente
-  if (!confirmed) {
+  const confirmWithRestAPI = async () => {
     try {
       console.log('🔄 Método 3: Confirmando email con API REST...');
       
@@ -214,20 +244,22 @@ export const confirmUserEmail = async (userId, email) => {
         }
       });
       
-      if (response.ok) {
-        console.log('✅ Email confirmado exitosamente con API REST');
-        confirmed = true;
-      } else {
+      if (!response.ok) {
         const errorData = await response.json();
         console.error('❌ Error en confirmación con API REST:', errorData);
+        return false;
       }
+      
+      console.log('✅ Email confirmado exitosamente con API REST');
+      return true;
     } catch (error) {
       console.error('❌ Error en confirmación con API REST:', error);
+      return false;
     }
-  }
+  };
   
-  // Método 4: Actualizar directamente en la tabla auth.users
-  if (!confirmed) {
+  // Método 4: Actualizar directamente con SQL
+  const confirmWithSQL = async () => {
     try {
       console.log('🔄 Método 4: Actualizando directamente con SQL...');
       
@@ -238,42 +270,59 @@ export const confirmUserEmail = async (userId, email) => {
       
       if (error) {
         console.error('❌ Error en SQL directo:', error);
-      } else {
-        console.log('✅ Email confirmado exitosamente con SQL directo');
-        confirmed = true;
+        return false;
       }
+      
+      console.log('✅ Email confirmado exitosamente con SQL directo');
+      return true;
     } catch (error) {
       console.error('❌ Error en SQL directo:', error);
+      return false;
     }
-  }
+  };
   
   // Verificar el estado actual del usuario
-  try {
-    console.log('🔍 Verificando estado actual del usuario...');
-    
-    const { data, error } = await supabase.auth.admin.getUserById(userId);
-    
-    if (error) {
-      console.error('❌ Error obteniendo estado actual del usuario:', error);
-    } else if (data && data.user) {
-      console.log('📊 Estado actual del usuario:', {
-        id: data.user.id,
-        email: data.user.email,
-        email_confirmed_at: data.user.email_confirmed_at,
-        confirmed_at: data.user.confirmed_at,
-        last_sign_in_at: data.user.last_sign_in_at
-      });
+  const verifyUserState = async () => {
+    try {
+      console.log('🔍 Verificando estado actual del usuario...');
       
-      // Si el email está confirmado, actualizar el estado
-      if (data.user.email_confirmed_at) {
-        confirmed = true;
+      const { data, error } = await supabase.auth.admin.getUserById(userId);
+      
+      if (error) {
+        console.error('❌ Error obteniendo estado actual del usuario:', error);
+        return false;
       }
+      
+      if (data && data.user) {
+        console.log('📊 Estado actual del usuario:', {
+          id: data.user.id,
+          email: data.user.email,
+          email_confirmed_at: data.user.email_confirmed_at,
+          confirmed_at: data.user.confirmed_at,
+          last_sign_in_at: data.user.last_sign_in_at
+        });
+        
+        // Si el email está confirmado, considerar exitoso
+        return Boolean(data.user.email_confirmed_at);
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('❌ Error verificando estado del usuario:', error);
+      return false;
     }
-  } catch (error) {
-    console.error('❌ Error verificando estado del usuario:', error);
-  }
+  };
   
-  return confirmed;
+  // Ejecutar el pipeline como una cadena de promesas (composición funcional)
+  return confirmWithUpdateUserById()
+    .then(result => result ? result : confirmWithRPC())
+    .then(result => result ? result : confirmWithRestAPI())
+    .then(result => result ? result : confirmWithSQL())
+    .then(result => result ? result : verifyUserState())
+    .catch(error => {
+      console.error('❌ Error fatal en pipeline de confirmación de email:', error);
+      return false;
+    });
 };
 
 /**
@@ -489,7 +538,7 @@ export const registerUser = async (email, password) => {
         // Si el email no está confirmado, intentar confirmarlo con la función específica
         if (!userStatus.user.email_confirmed_at) {
           console.log('⚠️ Email no confirmado, intentando confirmación manual...');
-          const confirmed = await confirmUserEmail(userData.id, email);
+          const confirmed = await confirmUserEmail(null, userData.id, email);
           
           if (confirmed) {
             console.log('✅ Email confirmado exitosamente con función específica');
