@@ -1,16 +1,38 @@
 /**
  * Configuración del servidor basada en los principios FCIS (Separación de Interfaces Funcionales y Composicionales)
  * 
- * En desarrollo: Se cargan variables desde .env
- * En producción: Se inyecta configuración desde el entorno de ejecución
+ * Estrategia de carga de configuración:
+ * 1. En desarrollo: Se cargan variables desde .env
+ * 2. En producción: Se intenta cargar desde runtime-config.json (k8s/contenedor)
+ * 3. Si no existe el archivo, se usa process.env (variables de Azure DevOps)
  */
 
 // Importar utilidades para inmutabilidad
 import fs from 'fs';
 import path from 'path';
 
+/**
+ * Detecta automáticamente el entorno basado en la URL o variables
+ * @returns {string} 'production' o 'development'
+ */
+const detectEnvironment = () => {
+  // Si NODE_ENV está explícitamente definido, usarlo
+  if (process.env.NODE_ENV) return process.env.NODE_ENV;
+  
+  // Detectar por hostname si es posible (en navegador no aplica)
+  const isProduction = process.env.HOSTNAME && 
+    (process.env.HOSTNAME.includes('api-platform.advancio.io') || 
+     process.env.HOSTNAME.includes('platform.advancio.io'));
+  
+  return isProduction ? 'production' : 'development';
+};
+
+// Establecer NODE_ENV basado en la detección
+process.env.NODE_ENV = detectEnvironment();
+const isDevelopment = process.env.NODE_ENV === 'development';
+
 // Solo cargar dotenv en desarrollo
-if (process.env.NODE_ENV === 'development') {
+if (isDevelopment) {
   console.log('🔧 Modo desarrollo: Cargando configuración desde .env');
   
   // Importación dinámica para evitar dependencias en producción
@@ -41,6 +63,8 @@ if (process.env.NODE_ENV === 'development') {
           });
         }
       });
+    } else {
+      console.log('ℹ️ No se encontró runtime-config.json, usando variables de Azure DevOps');
     }
   } catch (error) {
     console.error('⚠️ No se pudo cargar runtime-config.json:', error.message);
@@ -59,28 +83,39 @@ export function getConfig() {
     server: Object.freeze({
       port: parseInt(process.env.PORT || '3000', 10),
       nodeEnv: process.env.NODE_ENV || 'production',
+      isProduction: process.env.NODE_ENV !== 'development',
+      baseUrl: process.env.API_URL || 'http://localhost:3000', // URL base para el backend
     }),
     
     // Seguridad
     security: Object.freeze({
-      jwtSecret: process.env.JWT_SECRET || (process.env.NODE_ENV === 'development' 
-                                            ? 'desarrollo_secreto_jwt' 
-                                            : null),
-      corsOrigin: process.env.CORS_ORIGIN || '*',
+      jwtSecret: process.env.JWT_SECRET || (isDevelopment 
+                                         ? 'desarrollo_secreto_jwt' 
+                                         : null),
+      corsOrigin: process.env.CORS_ORIGIN || (isDevelopment 
+                                          ? 'http://localhost:5172' // Frontend local
+                                          : 'https://platform.advancio.io'), // Frontend producción
     }),
     
     // Servicios externos
     services: Object.freeze({
       n8n: Object.freeze({
-        webhookBaseUrl: process.env.N8N_WEBHOOK_BASE_URL || 'https://n8n.advancio.io/webhook',
+        webhookBaseUrl: process.env.N8N_BASE_URL || 'https://n8n.advancio.io/webhook',
       }),
       supabase: Object.freeze({
         url: process.env.SUPABASE_URL || '',
-        key: process.env.SUPABASE_KEY || ''
+        key: process.env.SUPABASE_KEY || '',
+        serviceKey: process.env.SUPABASE_SERVICE_KEY || '',
+        anonKey: process.env.SUPABASE_ANON_KEY || '',
+      }),
+      zoho: Object.freeze({
+        baseUrl: process.env.ZOHO_BASE_URL || 'https://desk.zoho.com/api/v1',
+        apiKey: process.env.ZOHO_API_KEY || '',
+        authToken: process.env.ZOHO_AUTH_TOKEN || '',
       })
     })
   });
-  
+
   return config;
 }
 

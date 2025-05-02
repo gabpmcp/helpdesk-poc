@@ -9,7 +9,7 @@ import { initializeApi } from './api/index.js';
 import { createClient } from '@supabase/supabase-js';
 import n8nClient from './shell/n8nClient.js';
 import { initializeWebSocketServer } from './ws/index.js';
-import getConfig, { validateConfig } from './config.js';
+import { getConfig } from './config.js';
 
 /**
  * Obtener y validar la configuración del sistema
@@ -60,47 +60,46 @@ const deps = {
  * Configure middleware and routes
  */
 
-// Enable CORS for all routes with specific origin
-const allowedOrigins = [
-  'http://localhost:5172',
-  'https://localhost:5172',
-  'http://localhost:5173',
-  'https://localhost:5173',
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'https://platform.advancio.io',
-  'https://api-platform.advancio.io'
-];
-
-// Función auxiliar para facilitar pruebas en desarrollo
-const isDevelopment = process.env.NODE_ENV === 'development';
+// Lista de orígenes permitidos basada en el entorno
+const allowedOrigins = config.server.isProduction
+  ? [
+      'https://platform.advancio.io',
+      'https://api-platform.advancio.io'
+    ]
+  : [
+      'http://localhost:5172',
+      'https://localhost:5172',
+      'http://localhost:5173',
+      'https://localhost:5173',
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'https://platform.advancio.io',
+      'https://api-platform.advancio.io'
+    ];
 
 // Configuración simplificada de CORS para evitar problemas
 app.use(cors({
-  origin: function(ctx) {
+  origin: (ctx) => {
     const requestOrigin = ctx.request.header.origin;
     console.log(`📝 CORS: Solicitud recibida de origen: ${requestOrigin}`);
     
-    // En desarrollo, permitir todos los orígenes conocidos
-    if (isDevelopment) {
-      if (allowedOrigins.includes(requestOrigin)) {
-        return requestOrigin;
-      }
-      
-      // Para solicitudes sin origen (como curl o postman)
-      if (!requestOrigin) {
-        return '*';
-      }
-      
-      // En desarrollo también permitimos otros orígenes no listados
-      return requestOrigin;
+    // Si no hay origen en la solicitud (como curl o postman)
+    if (!requestOrigin) {
+      return config.server.isProduction ? false : '*';
     }
     
-    // En producción, ser más estrictos
+    // Verificar si el origen está en la lista de permitidos
     if (allowedOrigins.includes(requestOrigin)) {
       return requestOrigin;
     }
     
+    // En desarrollo, ser más permisivo
+    if (!config.server.isProduction) {
+      console.log(`⚠️ CORS: Permitiendo origen no listado en modo desarrollo: ${requestOrigin}`);
+      return requestOrigin;
+    }
+    
+    console.log(`❌ CORS: Bloqueando origen no permitido: ${requestOrigin}`);
     return false; // Bloqueamos orígenes no permitidos en producción
   },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -128,7 +127,12 @@ app.use(async (ctx, next) => {
 // Add a simple health check endpoint for connectivity testing
 app.use(async (ctx, next) => {
   if (ctx.path === '/health') {
-    ctx.body = { status: 'ok', timestamp: new Date().toISOString() };
+    ctx.body = { 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      environment: config.server.nodeEnv,
+      version: process.env.APP_VERSION || '1.0.0'
+    };
     ctx.status = 200;
   } else {
     await next();
@@ -155,13 +159,15 @@ const startServer = async () => {
      * Start server
      */
     server.listen(config.server.port, () => {
-      console.log(`Server running on port ${config.server.port}`);
-      console.log(`API endpoints:`);
-      console.log(`- POST /api/commands - Central command endpoint`);
-      console.log(`- GET /api/state/:userId - State reconstruction endpoint`);
-      console.log(`- WS /ws/tickets/:ticketId - WebSocket chat for tickets`);
-      console.log(`- GET /health - Health check endpoint`);
-      console.log(`📝 Variables de entorno cargadas desde .env`);
+      console.log(`🚀 Servidor iniciado en modo ${config.server.nodeEnv}`);
+      console.log(`📡 Escuchando en puerto ${config.server.port}`);
+      console.log(`💻 URL base: ${config.server.baseUrl}`);
+      console.log(`🔒 CORS configurado para: ${config.security.corsOrigin}`);
+      console.log(`📝 Endpoints disponibles:`);
+      console.log(`  - POST /api/commands - Central command endpoint`);
+      console.log(`  - GET /api/state/:userId - State reconstruction endpoint`);
+      console.log(`  - WS /ws/tickets/:ticketId - WebSocket chat for tickets`);
+      console.log(`  - GET /health - Health check endpoint`);
     });
   } catch (error) {
     console.error('❌ Error al inicializar el servidor:', error);
