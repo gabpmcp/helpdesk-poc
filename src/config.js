@@ -81,6 +81,26 @@ if (isDevelopment) {
  * @returns {Object} Configuración inmutable (congelada)
  */
 export function getConfig() {
+  // Parsear orígenes CORS para permitir múltiples valores
+  const parseCorsOrigins = (originsStr) => {
+    if (!originsStr) return [];
+    // Soporta formato delimitado por comas "origen1,origen2" o un solo origen
+    return originsStr.includes(',') 
+      ? originsStr.split(',').map(o => o.trim()).filter(Boolean)
+      : [originsStr.trim()];
+  };
+
+  // Orígenes permitidos para CORS
+  const defaultCorsOrigins = isDevelopment 
+    ? ['http://localhost:5172'] 
+    : ['https://platform.advancio.io'];
+  
+  // Combinar orígenes configurados con los predeterminados
+  const configuredOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
+  const corsOrigins = configuredOrigins.length > 0 
+    ? configuredOrigins 
+    : defaultCorsOrigins;
+
   // Crear objeto de configuración completamente nuevo
   const config = Object.freeze({
     // Servidor
@@ -96,9 +116,10 @@ export function getConfig() {
       jwtSecret: process.env.JWT_SECRET || (isDevelopment 
                                          ? 'desarrollo_secreto_jwt' 
                                          : null),
-      corsOrigin: process.env.CORS_ORIGIN || (isDevelopment 
-                                          ? 'http://localhost:5172' // Frontend local
-                                          : 'https://platform.advancio.io'), // Frontend producción
+      // Array inmutable de orígenes CORS permitidos
+      corsOrigins: Object.freeze(corsOrigins),
+      // Mantener corsOrigin para compatibilidad con código existente
+      corsOrigin: corsOrigins[0] || ''
     }),
     
     // Servicios externos

@@ -60,22 +60,25 @@ const deps = {
  * Configure middleware and routes
  */
 
-// Lista de orígenes permitidos basada en el entorno
-const allowedOrigins = config.server.isProduction
-  ? [
-      'https://platform.advancio.io',
-      'https://api-platform.advancio.io'
-    ]
-  : [
-      'http://localhost:5172',
-      'https://localhost:5172',
-      'http://localhost:5173',
-      'https://localhost:5173',
-      'http://localhost:3000',
-      'http://localhost:3001',
-      'https://platform.advancio.io',
-      'https://api-platform.advancio.io'
-    ];
+// Middleware para manejo de excepciones
+app.use(async (ctx, next) => {
+  try {
+    await next();
+  } catch (err) {
+    ctx.status = err.status || 500;
+    ctx.body = {
+      error: {
+        message: err.message,
+        code: err.code || 'INTERNAL_SERVER_ERROR'
+      }
+    };
+    console.error('Request error:', err);
+  }
+});
+
+// Obtener lista de orígenes CORS permitidos desde la configuración
+const allowedOrigins = config.security.corsOrigins;
+console.log('🔒 Orígenes CORS permitidos:', allowedOrigins);
 
 // Configuración simplificada de CORS para evitar problemas
 app.use(cors({
@@ -93,6 +96,7 @@ app.use(cors({
     
     // Verificar si el origen está en la lista de permitidos
     if (allowedOrigins.includes(requestOrigin)) {
+      console.log(`✅ CORS: Permitiendo origen listado: ${requestOrigin}`);
       return requestOrigin;
     }
     
@@ -111,21 +115,6 @@ app.use(cors({
   exposeHeaders: ['Content-Length', 'Date', 'X-Request-Id'],
   maxAge: 86400 // 24 horas en segundos
 }));
-
-app.use(async (ctx, next) => {
-  try {
-    await next();
-  } catch (err) {
-    ctx.status = err.status || 500;
-    ctx.body = {
-      error: {
-        message: err.message,
-        code: err.code || 'INTERNAL_SERVER_ERROR'
-      }
-    };
-    console.error('Request error:', err);
-  }
-});
 
 // Add a simple health check endpoint for connectivity testing
 app.use(async (ctx, next) => {
@@ -165,7 +154,7 @@ const startServer = async () => {
       console.log(`🚀 Servidor iniciado en modo ${config.server.nodeEnv}`);
       console.log(`📡 Escuchando en puerto ${config.server.port}`);
       console.log(`💻 URL base: ${config.server.baseUrl}`);
-      console.log(`🔒 CORS configurado para: ${config.security.corsOrigin}`);
+      console.log(`🔒 CORS configurado para: ${config.security.corsOrigins}`);
       console.log(`📝 Endpoints disponibles:`);
       console.log(`  - POST /api/commands - Central command endpoint`);
       console.log(`  - GET /api/state/:userId - State reconstruction endpoint`);

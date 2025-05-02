@@ -26,6 +26,7 @@ import {
 } from '../services/zohoProxyService.js';
 import { setupProjectionRoutes, setupWebhookRoutes, setupDashboardRoutes, setupZohoApiRoutes } from './projections.js';
 import commentsRouter from './comments.js';
+import getConfig from '../config.js';
 
 /**
  * JWT secret key (should be in env vars in production)
