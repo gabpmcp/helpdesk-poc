@@ -84,8 +84,11 @@ app.use(cors({
     console.log(`📝 CORS: Solicitud recibida de origen: ${requestOrigin}`);
     
     // Si no hay origen en la solicitud (como curl o postman)
+    // Nunca devolver '*' porque es incompatible con credentials:true
     if (!requestOrigin) {
-      return config.server.isProduction ? false : '*';
+      return config.server.isProduction 
+        ? false 
+        : (allowedOrigins[0] || false); // Usar el primer origen permitido en desarrollo
     }
     
     // Verificar si el origen está en la lista de permitidos

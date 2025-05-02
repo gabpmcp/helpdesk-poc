@@ -230,11 +230,16 @@ const storeEvent$ = async (event, deps) => {
   console.log('Attempting to store event in Supabase:', event);
   console.log('Using persist function:', deps.persistFn ? 'Available' : 'Not available');
   
-  // For testing purposes, if we don't have a valid persist function,
-  // we'll simulate a successful storage operation
-  if (!deps.persistFn || process.env.NODE_ENV === 'test') {
-    console.log('Using mock event storage (no persist function)');
-    return Promise.resolve(Result.ok(event));
+  // Si no hay función de persistencia disponible, usamos un comportamiento alternativo
+  // en desarrollo, pero en producción debe fallar explícitamente
+  if (!deps.persistFn) {
+    const config = getConfig();
+    if (config.server.isProduction) {
+      return Promise.resolve(Result.error(new Error('No persistence function available in production')));
+    } else {
+      console.log('🔧 Modo desarrollo: Usando almacenamiento de eventos simulado');
+      return Promise.resolve(Result.ok(event));
+    }
   }
   
   const result = await storeEvent(deps.persistFn)(event);
@@ -266,25 +271,31 @@ const notify$ = async (event, deps) => {
     supabaseClient: deps.supabaseClient
   };
   
-  // For testing purposes or when external services are not available,
-  // we'll simulate successful notification processing
-  if (process.env.NODE_ENV === 'test' || !deps.authenticate) {
-    console.log('Using mock notification processing (no external services)');
+  // En desarrollo, si no hay servicio de autenticación, proporcionamos un simulacro
+  // En producción, rechazamos explícitamente si faltan servicios críticos
+  const config = getConfig();
+  if (!deps.authenticate) {
+    if (config.server.isProduction) {
+      console.error('❌ Error crítico: Servicio de autenticación no disponible en producción');
+      return Promise.resolve(Result.error(new Error('Authentication service not available in production')));
+    }
     
-    // Simulate appropriate responses based on event type
+    console.log('🔧 Modo desarrollo: Usando procesamiento de notificaciones simulado');
+    
+    // Simulación de respuestas basadas en el tipo de evento (solo en desarrollo)
     if (event.type === 'LOGIN_REQUESTED') {
-      // Simulate a successful login for testing
+      // Simular un login exitoso para desarrollo
       const loginSucceededEvent = deepFreeze({
         type: 'LOGIN_SUCCEEDED',
         email: event.email,
         timestamp: event.timestamp,
-        accessToken: 'mock-access-token-' + Date.now(),
-        refreshToken: 'mock-refresh-token-' + Date.now()
+        accessToken: 'dev-access-token-' + Date.now(),
+        refreshToken: 'dev-refresh-token-' + Date.now()
       });
       return Promise.resolve(Result.ok(loginSucceededEvent));
     }
     
-    // For other event types, just return the event as is
+    // Para otros eventos, simplemente devolver el evento como está
     return Promise.resolve(Result.ok(event));
   }
   
@@ -404,26 +415,31 @@ const createExternalServiceFunctions = async (deps) => {
   
   // Create primitive authentication function - with mock for development/testing
   const authenticate = (() => {
-    if (process.env.NODE_ENV === 'test' || process.env.MOCK_AUTH === 'true') {
-      // Mock authentication function for testing
+    const config = getConfig();
+    
+    // Usar autenticación simulada solo en desarrollo y cuando se configura explícitamente
+    if (!config.server.isProduction && process.env.MOCK_AUTH === 'true') {
+      console.log('🔧 Modo desarrollo: Usando autenticación simulada (MOCK_AUTH=true)');
+      
+      // Función de autenticación simulada solo para desarrollo
       return (email, password) => {
-        console.log('[MOCK AUTH] Testing credentials for:', email);
+        console.log('[DEV AUTH] Verificando credenciales para:', email);
         
-        // For testing, we'll accept a specific test account
+        // Para desarrollo, aceptamos una cuenta específica de prueba
         if (email === 'test@example.com' && password === 'password123') {
-          console.log('[MOCK AUTH] Valid test credentials');
+          console.log('[DEV AUTH] Credenciales de desarrollo válidas');
           return Promise.resolve(Result.ok({
             email: 'test@example.com',
             userDetails: {
-              name: 'Test User',
+              name: 'Usuario de Desarrollo',
               email: 'test@example.com',
               role: 'user'
             }
           }));
         }
         
-        // Reject all other credentials
-        console.log('[MOCK AUTH] Invalid credentials');
+        // Rechazar todas las demás credenciales
+        console.log('[DEV AUTH] Credenciales inválidas');
         return Promise.resolve(Result.error(new Error('Invalid credentials')));
       };
     } else if (deps.n8nClient) {
@@ -735,7 +751,7 @@ const setupApiRoutes = async (deps) => {
         console.error('❌ Error in n8n response: No result object');
         ctx.status = 500;
         ctx.body = deepFreeze({ 
-          error: 'No response from n8n for ticket comments'
+          error: 'No response received from n8n for ticket comments'
         });
         return;
       }

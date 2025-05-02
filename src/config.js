@@ -12,14 +12,18 @@ import fs from 'fs';
 import path from 'path';
 
 /**
- * Detecta automáticamente el entorno basado en la URL o variables
+ * Detecta y normaliza el entorno de ejecución
+ * Solo permite 'development' o 'production'
  * @returns {string} 'production' o 'development'
  */
 const detectEnvironment = () => {
-  // Si NODE_ENV está explícitamente definido, usarlo
-  if (process.env.NODE_ENV) return process.env.NODE_ENV;
+  // Si NODE_ENV está explícitamente definido, normalizarlo
+  if (process.env.NODE_ENV) {
+    // Normalizar a solo development o production
+    return process.env.NODE_ENV === 'development' ? 'development' : 'production';
+  }
   
-  // Detectar por hostname si es posible (en navegador no aplica)
+  // Detectar por hostname si es posible
   const isProduction = process.env.HOSTNAME && 
     (process.env.HOSTNAME.includes('api-platform.advancio.io') || 
      process.env.HOSTNAME.includes('platform.advancio.io'));
@@ -27,7 +31,7 @@ const detectEnvironment = () => {
   return isProduction ? 'production' : 'development';
 };
 
-// Establecer NODE_ENV basado en la detección
+// Establecer NODE_ENV basado en la detección y normalización
 process.env.NODE_ENV = detectEnvironment();
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -82,8 +86,8 @@ export function getConfig() {
     // Servidor
     server: Object.freeze({
       port: parseInt(process.env.PORT || '3000', 10),
-      nodeEnv: process.env.NODE_ENV || 'production',
-      isProduction: process.env.NODE_ENV !== 'development',
+      nodeEnv: isDevelopment ? 'development' : 'production', // Solo permitir estos dos valores
+      isProduction: !isDevelopment,
       baseUrl: process.env.API_URL || 'http://localhost:3000', // URL base para el backend
     }),
     
@@ -120,38 +124,33 @@ export function getConfig() {
 }
 
 /**
- * Verifica que la configuración crítica esté presente
- * Implementación puramente funcional sin efectos secundarios
- * @param {Object} config - Configuración a validar 
- * @returns {Object} La misma configuración validada (inmutable)
- * @throws {Error} Si faltan valores críticos
+ * Valida que la configuración tenga todos los valores requeridos para el entorno actual
+ * @param {Object} conf - Configuración a validar
+ * @returns {Array<string>} - Lista de errores encontrados
  */
-export function validateConfig(config) {
-  // Función pura que devuelve un array de claves faltantes
+export function validateConfig(conf) {
   const getMissingKeys = (conf) => {
-    // Usa Array.filter para mantener inmutabilidad (en lugar de push)
-    const requiredProductionKeys = [
-      { key: 'JWT_SECRET', check: () => conf.server.nodeEnv === 'production' && !conf.security.jwtSecret },
-      { key: 'SUPABASE_URL', check: () => conf.server.nodeEnv === 'production' && !conf.services.supabase.url },
-      { key: 'SUPABASE_KEY', check: () => conf.server.nodeEnv === 'production' && !conf.services.supabase.key }
-    ];
+    const check = (key, condition) => condition ? key : null;
     
-    // Usa filter en lugar de un array mutable con push
-    return requiredProductionKeys
-      .filter(item => item.check())
-      .map(item => item.key);
+    return [
+      // En producción, requerir JWT_SECRET
+      { key: 'JWT_SECRET', check: () => conf.server.nodeEnv === 'production' && !conf.security.jwtSecret },
+      // Otras validaciones...
+    ]
+    .map(({ key, check }) => check() ? key : null)
+    .filter(Boolean);
   };
+
+  const missingKeys = getMissingKeys(conf);
   
-  // Obtener claves faltantes de manera inmutable
-  const missingKeys = getMissingKeys(config);
-  
-  // Verificación de errores
   if (missingKeys.length > 0) {
-    throw new Error(`Configuración crítica faltante: ${missingKeys.join(', ')}`);
+    console.error('❌ Error de configuración: Faltan claves requeridas:', missingKeys.join(', '));
+    if (!isDevelopment) {
+      throw new Error(`Configuración inválida: Faltan claves requeridas: ${missingKeys.join(', ')}`);
+    }
   }
   
-  // Devolvemos la configuración original sin modificarla
-  return config;
+  return missingKeys;
 }
 
 /**
@@ -166,8 +165,4 @@ export function hasRuntimeConfig() {
   }
 }
 
-// Exportación por defecto de la configuración validada
-export default function() {
-  const config = getConfig();
-  return validateConfig(config);
-}
+export default getConfig;

@@ -10,6 +10,15 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const ACCESS_TOKEN_EXPIRY = '1h';
 const REFRESH_TOKEN_EXPIRY = '7d';
 
+// Configuración del entorno
+const getConfig = () => {
+  return {
+    server: {
+      isProduction: process.env.NODE_ENV === 'production'
+    }
+  };
+};
+
 /**
  * Pure function to validate credentials against Supabase
  * @param {Object} supabaseClient - Supabase client instance
@@ -17,9 +26,12 @@ const REFRESH_TOKEN_EXPIRY = '7d';
  */
 export const validateCredentials = (supabaseClient) => async (email, password) => {
   return tryCatchAsync(async () => {
-    // Skip validation if not in a production environment
-    if (process.env.NODE_ENV !== 'production' && process.env.SKIP_AUTH_VALIDATION === 'true') {
-      console.warn('⚠️ Skipping auth validation in development mode');
+    // Obtener la configuración del entorno de forma inmutable
+    const config = getConfig();
+    
+    // Omitir validación solo en desarrollo y cuando está explícitamente configurado
+    if (!config.server.isProduction && process.env.SKIP_AUTH_VALIDATION === 'true') {
+      console.warn('⚠️ Omitiendo validación de autenticación en modo desarrollo');
       return Result.ok({ email });
     }
     
