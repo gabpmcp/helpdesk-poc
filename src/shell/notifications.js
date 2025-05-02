@@ -527,9 +527,6 @@ const buildLoginResult = ({ user, session }) =>
     session
   });
 
-const logRegisterAttempt = ({ email }) =>
-  console.log('[SUPABASE] Attempting to register user:', email);
-
 const assertSignUpAvailable = (auth) => (input) => {
   if (!auth?.signUp || typeof auth.signUp !== 'function') {
     return Promise.reject(serviceUnavailableError());
@@ -620,9 +617,6 @@ const formatRegisterData = (data) => ({
   userDetails: data.user_metadata,
   session: data.session,
 });
-
-const logRegisterSuccess = (data) =>
-  console.log('[SUPABASE] Registration successful:', data);
 
 const parseError = (err, defaultCode) => {
   const parsed = safeJsonParse(err?.message);
@@ -802,6 +796,8 @@ const authenticateWithSupabase = (deps) => async (event) => {
           email: event.email,
           password: event.password // Usar contraseña tal como viene del frontend
         });
+
+        console.log('[SUPABASE] Login response:', loginResponse);
         
         if (loginResponse.error) {
           console.error('[SUPABASE] Error en signInWithPassword:', loginResponse.error);
@@ -908,6 +904,8 @@ const authenticateWithSupabase = (deps) => async (event) => {
       }
       
       const { authData, event } = result.unwrap();
+
+      console.log('[SUPABASE] Datos de autenticación:', authData, event);
       
       // Verificar que tenemos datos válidos
       if (!authData?.user) {
@@ -942,23 +940,141 @@ const authenticateWithSupabase = (deps) => async (event) => {
       return Result.ok(loginResult);
     },
     
+    // Nuevo paso: Buscar el contactId en eventos previos del usuario
+    async (loginResult) => {
+      if (loginResult.isError) return loginResult;
+      
+      const authData = loginResult.unwrap();
+      
+      // Solo procedemos si no tenemos ya un zoho_contact_id
+      if (authData.zoho_contact_id) {
+        console.log('[EVENTS] Ya tenemos zoho_contact_id, no es necesario buscar en eventos previos');
+        return Result.ok({
+          ...authData,
+          contactId: authData.zoho_contact_id // Usar el zoho_contact_id existente como contactId
+        });
+      }
+      
+      return tryCatchAsync(async () => {
+        console.log('[EVENTS] Buscando contactId en eventos previos para:', authData.email);
+        
+        // Crear cliente Supabase para consultar la tabla de eventos
+        const { createClient } = await import('@supabase/supabase-js');
+        const supabase = createClient(
+          process.env.SUPABASE_URL,
+          process.env.SUPABASE_SERVICE_KEY
+        );
+        
+        // Buscar eventos REGISTRATION_SUCCEEDED para este usuario
+        const { data: events, error } = await supabase
+          .from('events')
+          .select('*')
+          .eq('email', authData.email)
+          .eq('type', 'REGISTRATION_SUCCEEDED')
+          .order('timestamp', { ascending: false })
+          .limit(1);
+        
+        if (error) {
+          console.error('[EVENTS] Error al buscar eventos previos:', error);
+          // Continuar sin contactId, no fallar el proceso
+          return {
+            ...authData,
+            contactId: '' // Sin contactId
+          };
+        }
+        
+        // Extraer contactId del evento más reciente si existe
+        const latestEvent = events && events.length > 0 ? events[0] : null;
+        const contactId = latestEvent?.contactId || latestEvent?.zoho_contact_id || '';
+        
+        console.log('[EVENTS] ContactId encontrado en eventos previos:', contactId || 'no encontrado');
+        
+        // Devolver datos de autenticación enriquecidos
+        return {
+          ...authData,
+          contactId
+        };
+      })();
+    },
+    
     // 5. Generar y almacenar evento LOGIN_SUCCEEDED
     async (loginResult) => {
       if (loginResult.isError) return loginResult;
       
       const authData = loginResult.unwrap();
       
-      // Crear evento LOGIN_SUCCEEDED inmutable
+      // Enriquecer los datos con información de contacto de Zoho CRM via n8n
+      const enrichedAuthData = await pipeAsync(
+        // Verificar si tenemos contactID para consultar
+        () => {
+          // Primero intentamos con el contactId explícito, luego con zoho_contact_id
+          const contactID = authData.contactId || authData.zoho_contact_id;
+          if (!contactID) {
+            console.log('[ZOHO] No se encontró contactId ni zoho_contact_id, no se puede enriquecer el evento');
+            return Result.ok(authData);
+          }
+          return Result.ok({ ...authData, contactID });
+        },
+        
+        // Consultar perfil de contacto en n8n
+        async (result) => {
+          if (result.isError) return result;
+          const data = result.unwrap();
+          
+          return tryCatchAsync(async () => {
+            console.log(`[ZOHO] Consultando perfil de contacto en n8n para ID: ${data.contactID}`);
+            const response = await fetch(`https://n8n.advancio.io/webhook/get-contact-profile?contactID=${data.contactID}`, {
+              method: 'GET',
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            });
+            
+            if (!response.ok) {
+              throw new Error(`Error al consultar perfil de contacto: ${response.status} ${response.statusText}`);
+            }
+            
+            const contactProfile = await response.json();
+            console.log('[ZOHO] Perfil de contacto obtenido:', JSON.stringify(contactProfile));
+            
+            // Extraer datos relevantes del perfil
+            const { 
+              phone = '',
+              contactId = data.contactID,
+              jobTitle = '',
+              companyName = data.companyName || ''
+            } = contactProfile || {};
+            
+            return {
+              ...data,
+              phone,
+              contactId,
+              jobTitle,
+              companyName
+            };
+          })();
+        }
+      )().catch(error => {
+        console.error('[ZOHO] Error al enriquecer datos de contacto:', error);
+        // Continuar con los datos que teníamos originalmente en caso de error
+        return Result.ok(authData);
+      }).then(result => result.isOk ? result.unwrap() : authData);
+      
+      console.log('[SUPABASE] Enriched auth data:', enrichedAuthData);
+
+      // Crear evento LOGIN_SUCCEEDED inmutable con datos enriquecidos
       const loginSucceededEvent = deepFreeze({
         type: 'LOGIN_SUCCEEDED',
-        userId: authData.userId,
-        email: authData.email,
-        zoho_contact_id: authData.zoho_contact_id,
-        zoho_account_id: authData.zoho_account_id,
-        fullName: authData.fullName,
-        companyName: authData.companyName,
-        userDetails: authData.userDetails,
-        session: authData.session,
+        userId: enrichedAuthData.userId,
+        email: enrichedAuthData.email,
+        zoho_contact_id: enrichedAuthData.zoho_contact_id,
+        zoho_account_id: enrichedAuthData.zoho_account_id,
+        fullName: enrichedAuthData.fullName,
+        companyName: enrichedAuthData.companyName,
+        phone: enrichedAuthData.phone || '',
+        jobTitle: enrichedAuthData.jobTitle || '',
+        userDetails: enrichedAuthData.userDetails,
+        session: enrichedAuthData.session,
         timestamp: new Date().toISOString()
       });
       
@@ -1082,7 +1198,7 @@ const handleSuccessfulLogin = async (event, authResult, deps) => {
     userDetails: authResult.userDetails,
     session: authResult.session,
     companies: authResult.companies || [],
-    timestamp: event.timestamp || new Date().toISOString()
+    timestamp: new Date().toISOString()
   });
   
   console.log('Login succeeded, storing event');
@@ -1127,6 +1243,8 @@ const handleLoginSucceeded = async (event, deps) => {
       accessToken,
       refreshToken
     });
+
+    console.log({enrichedEvent})
     
     // Store refresh token for later validation
     // This is a side effect, but isolated in this function
@@ -1134,7 +1252,7 @@ const handleLoginSucceeded = async (event, deps) => {
       type: 'REFRESH_TOKEN_STORED',
       email: event.email,
       refreshToken,
-      timestamp: event.timestamp
+      timestamp: new Date().toISOString()
     });
     
     // Store token event and handle potential errors functionally
@@ -1148,17 +1266,91 @@ const handleLoginSucceeded = async (event, deps) => {
     // Create and store a PROFILE_UPDATED event to ensure profile consistency
     if (deps.storeEvent) {
       try {
+        // Pipeline para obtener el perfil completo del contacto si tenemos un ID de contacto
+        const getContactProfileData = async () => {
+          // Si no tenemos n8nClient en las dependencias o no tiene la función getContactProfile
+          if (!deps.n8nClient || !deps.n8nClient.getContactProfile) {
+            console.warn('n8nClient not available for profile retrieval');
+            return null;
+          }
+          
+          // Usar únicamente el zoho_contact_id, ya que el endpoint específicamente requiere un contactId
+          const contactId = enrichedEvent.zoho_contact_id;
+          
+          // Si no tenemos contactId, no ejecutamos la consulta
+          if (!contactId) {
+            console.warn('No contactId available for profile retrieval, skipping API call');
+            return null;
+          }
+          
+          console.log('Retrieving complete contact profile via n8n workflow using contactId:', contactId);
+          
+          // Pipeline funcional para obtener el perfil completo del contacto
+          try {
+            const result = await deps.n8nClient.getContactProfile(contactId);
+            console.log('Raw profile data result:', JSON.stringify(result));
+            
+            // Manejo funcional de errores
+            if (result.isError) {
+              console.warn('Failed to get contact profile:', result.unwrapError());
+              return null;
+            }
+            
+            // Extraer y devolver los datos del perfil 
+            const profileData = result.unwrap();
+            console.log('Unwrapped profile data:', JSON.stringify(profileData));
+            
+            return profileData;
+          } catch (error) {
+            // Manejo centralizado de errores
+            console.error('Error in contact profile retrieval:', error);
+            return null;
+          }
+        };
+        
+        // Ejecutar el pipeline para obtener el perfil
+        const contactProfile = await getContactProfileData();
+        console.log('Final contact profile data:', JSON.stringify(contactProfile));
+        
+        // Determinar los valores a usar en el evento PROFILE_UPDATED, priorizando los datos del perfil
+        const {
+          // Extraer explícitamente los campos que necesitamos del perfil
+          contactId = '',
+          fullName = '',
+          jobTitle = '',
+          companyName = '',
+          phone = '',
+          email = ''
+        } = contactProfile || {};
+        
+        console.log('Extracted profile fields:', { contactId, fullName, jobTitle, companyName, phone, email });
+        
+        // Crear el evento PROFILE_UPDATED con los datos del perfil correctamente mapeados
         const profileEvent = deepFreeze({
           type: 'PROFILE_UPDATED',
-          email: event.email,
-          userId: event.userId || event.userDetails.id,
-          zoho_contact_id: enrichedEvent.zoho_contact_id,
-          zoho_account_id: enrichedEvent.zoho_account_id,
-          fullName: enrichedEvent.fullName,
-          companyName: enrichedEvent.companyName,
-          timestamp: event.timestamp || new Date().toISOString()
+          email: email || event.email || '',
+          userId: event.userId || event.userDetails?.id || '',
+          
+          // Priorizar contactId del perfil, luego el del evento enriquecido
+          zoho_contact_id: contactId || enrichedEvent.zoho_contact_id || '',
+          
+          zoho_account_id: enrichedEvent.zoho_account_id || '',
+          
+          // Priorizar fullName del perfil, luego el del evento enriquecido
+          fullName: fullName || enrichedEvent.fullName || '',
+          
+          // Priorizar companyName del perfil, luego el del evento enriquecido
+          companyName: companyName || enrichedEvent.companyName || '',
+          
+          // Usar jobTitle del perfil (podría ser vacío pero nunca undefined)
+          jobTitle,
+          
+          // Usar phone del perfil (podría ser vacío pero nunca undefined)
+          phone,
+          timestamp: new Date().toISOString()
         });
         
+        console.log('Storing PROFILE_UPDATED event with complete data:', JSON.stringify(profileEvent));
         await deps.storeEvent(profileEvent);
       } catch (error) {
         console.error('Failed to store PROFILE_UPDATED event:', error);
@@ -1493,6 +1685,10 @@ const handleUserRegistrationRequested = async (event, deps) => {
     const contactData = verifyResult.unwrap();
     const contact = contactData.contact || {};
     
+    // Obtener de forma segura el contactId que necesitaremos después
+    const contactId = contact.id || '';
+    console.log(`[ZOHO] Contact information extracted for registration, contactId: ${contactId}`);
+    
     // Register user in Supabase
     const registerResult = await registerSupabaseUser(deps.supabaseAuth)(event.email, event.password);
     
@@ -1517,6 +1713,7 @@ const handleUserRegistrationRequested = async (event, deps) => {
       email: event.email,
       userId: registerResult.unwrap().userId,
       zoho_contact_id: contact.id || '',
+      contactId, // Guardamos contactId explícitamente para acceso futuro
       fullName: contact.name || '',
       companyId: contact.accountId || '',
       companyName: contact.accountName || '',

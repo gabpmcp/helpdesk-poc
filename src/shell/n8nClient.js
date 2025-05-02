@@ -8,7 +8,8 @@ import { Result, tryCatchAsync, deepFreeze } from '../utils/functional.js';
 const {
   N8N_BASE_URL,
   N8N_ZOHO_CONTACT_CHECK_PATH,
-  N8N_ZOHO_GET_COMPANIES_PATH
+  N8N_ZOHO_GET_COMPANIES_PATH,
+  N8N_ZOHO_GET_CONTACT_PROFILE_PATH
 } = process.env;
 
 // Validate environment variables
@@ -217,6 +218,169 @@ export const escalateTicket = async (ticket) => {
   })();
 };
 
+/**
+ * Gets complete profile information for a contact from Zoho CRM via n8n workflow
+ * @param {string} contactID - Zoho contact ID
+ * @returns {Promise<Result>} - Result with the complete contact profile data or error
+ */
+export const getContactProfile = async (contactID) => {
+  // Validación temprana de configuración necesaria
+  const validateConfig = () => 
+    (!N8N_BASE_URL || !N8N_ZOHO_GET_CONTACT_PROFILE_PATH)
+      ? Result.error(new Error(JSON.stringify({
+          status: 503,
+          message: 'n8n service not configured',
+          details: { errorCode: 'N8N_NOT_CONFIGURED', message: 'n8n service not configured for Zoho operations' }
+        })))
+      : Result.ok({ N8N_BASE_URL, N8N_ZOHO_GET_CONTACT_PROFILE_PATH });
+  
+  // Validación temprana de parámetros
+  const validateParams = () => 
+    !contactID
+      ? Result.error(new Error(JSON.stringify({
+          status: 400,
+          message: 'Contact ID is required',
+          details: { errorCode: 'MISSING_CONTACT_ID', message: 'Contact ID is required for profile retrieval' }
+        })))
+      : Result.ok(contactID);
+  
+  // Función pura para construir la URL
+  const buildUrl = ({ N8N_BASE_URL, N8N_ZOHO_GET_CONTACT_PROFILE_PATH, contactID }) => 
+    `${N8N_BASE_URL}${N8N_ZOHO_GET_CONTACT_PROFILE_PATH}?contactID=${encodeURIComponent(contactID)}`;
+  
+  // Función para hacer el fetch con manejo de errores
+  const fetchProfile = async (url) => {
+    console.log('🔍 Getting contact profile via n8n workflow:', url);
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const { status, statusText, headers } = response;
+    console.log('Profile Response status:', status, statusText);
+    console.log('Content-Type:', headers.get('content-type'));
+    
+    return response;
+  };
+  
+  // Función para manejar respuestas HTTP no exitosas
+  const handleErrorResponse = async (response) => {
+    if (response.ok) return { response, isError: false };
+    
+    const errorText = await response.text();
+    console.error('Error response text:', errorText);
+    
+    try {
+      const { message, details } = JSON.parse(errorText);
+      return { 
+        isError: true,
+        error: new Error(JSON.stringify({
+          status: response.status,
+          message: message || 'n8n request failed',
+          details: details || { errorCode: 'N8N_REQUEST_FAILED' }
+        }))
+      };
+    } catch (e) {
+      return { 
+        isError: true,
+        error: new Error(JSON.stringify({
+          status: response.status,
+          message: errorText || 'n8n request failed',
+          details: { errorCode: 'N8N_REQUEST_FAILED' }
+        }))
+      };
+    }
+  };
+  
+  // Función para extraer y parsear el contenido
+  const extractContent = async ({ response, isError, error }) => {
+    if (isError) return Result.error(error);
+    
+    const responseText = await response.text();
+    console.log('Profile data text:', responseText);
+    
+    return !responseText || responseText.trim() === ''
+      ? Result.ok(createEmptyProfile(contactID))
+      : Result.ok({ responseText, contactID });
+  };
+  
+  // Función para parsear el contenido JSON
+  const parseContent = ({ responseText, contactID }) => {
+    try {
+      const result = JSON.parse(responseText);
+      console.log('Profile data parsed:', result);
+      
+      // Asegurarnos de que todas las propiedades estén presentes
+      // Esto es crítico para garantizar que se persista todo en el evento PROFILE_UPDATED
+      return {
+        contactId: result.contactId || contactID,
+        fullName: result.fullName || '',
+        jobTitle: result.jobTitle || '',
+        companyName: result.companyName || '',
+        phone: result.phone || '',
+        email: result.email || '',
+        // Mantenemos el payload completo para acceso a campos adicionales
+        payload: result
+      };
+    } catch (error) {
+      console.error('Error parsing JSON response:', error);
+      return {
+        ...createEmptyProfile(contactID),
+        rawResponse: responseText.substring(0, 200)
+      };
+    }
+  };
+  
+  // Función pura para crear un perfil vacío
+  const createEmptyProfile = (contactID) => ({
+    contactId: contactID,
+    fullName: '',
+    jobTitle: '',
+    companyName: '',
+    phone: '',
+    email: '',
+    payload: {}
+  });
+  
+  // Pipeline principal utilizando async/await y composición funcional
+  return tryCatchAsync(async () => {
+    // Validación de configuración
+    const configResult = validateConfig();
+    if (configResult.isError) {
+      console.error('❌ n8n configuration missing for Zoho contact profile retrieval');
+      throw configResult.unwrapError();
+    }
+    
+    // Validación de parámetros
+    const paramsResult = validateParams();
+    if (paramsResult.isError) {
+      console.error('❌ Contact ID is required for profile retrieval');
+      throw paramsResult.unwrapError();
+    }
+    
+    // Construir URL con los datos validados
+    const { N8N_BASE_URL, N8N_ZOHO_GET_CONTACT_PROFILE_PATH } = configResult.unwrap();
+    const url = buildUrl({ N8N_BASE_URL, N8N_ZOHO_GET_CONTACT_PROFILE_PATH, contactID });
+    
+    // Ejecutar pipeline de fetch -> manejo de errores -> extracción de contenido -> parsing
+    const response = await fetchProfile(url);
+    const errorCheckResult = await handleErrorResponse(response);
+    const contentResult = await extractContent(errorCheckResult);
+    
+    if (contentResult.isError) {
+      throw contentResult.unwrapError();
+    }
+    
+    const profileData = contentResult.unwrap();
+    const finalProfile = 'responseText' in profileData
+      ? parseContent(profileData)
+      : profileData;
+    
+    return deepFreeze(finalProfile);
+  })();
+};
+
 export default {
   verifyZohoContact,
   getZohoCompanies,
@@ -225,5 +389,6 @@ export default {
   createTicket,
   updateTicket,
   addComment,
-  escalateTicket
+  escalateTicket,
+  getContactProfile
 };

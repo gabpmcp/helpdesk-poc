@@ -113,8 +113,8 @@ export const validateZohoContact = async (email) => {
     const result = {
       email: contactData.email,
       fullName: contactData.fullName || '',
-      zoho_contact_id: contactData.zoho_contact_id || contactData.id || '',
-      zoho_account_id: contactData.zoho_account_id || contactData.companyID?.toString() || '',
+      zoho_contact_id: contactData.contactId || contactData.zoho_contact_id || contactData.id || '',
+      zoho_account_id: contactData.accountId || contactData.zoho_account_id || contactData.companyID?.toString() || '',
       companyName: contactData.companyName || ''
     };
     
