@@ -35,15 +35,53 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 /**
  * CORS middleware factory - Configura CORS para rutas que requieren credenciales
+ * Implementación funcional que utiliza la configuración centralizada
  * @param {Function} handler - Controlador de ruta
  * @returns {Function} Controlador con CORS configurado
  */
 const withCors = handler => async (ctx, next) => {
+  // Obtener la configuración centralizada
+  const config = getConfig();
+  const requestOrigin = ctx.request.header.origin;
+  
+  // Obtener orígenes permitidos de la configuración centralizada
+  const allowedOrigins = config.security.corsOrigins || ['http://localhost:5172'];
+  
+  // Log para depuración
+  console.log(`🔒 CORS Request from: ${requestOrigin} to ${ctx.path}`);
+  
+  // Determinar el origen a permitir
+  const allowOrigin = (() => {
+    // Si no hay origen en la solicitud
+    if (!requestOrigin) {
+      return config.server.isProduction 
+        ? false 
+        : (allowedOrigins[0] || false);
+    }
+    
+    // Si el origen está en la lista de permitidos
+    if (allowedOrigins.includes(requestOrigin)) {
+      console.log(`✅ CORS: Permitiendo origen listado: ${requestOrigin}`);
+      return requestOrigin;
+    }
+    
+    // En desarrollo, ser más permisivo
+    if (!config.server.isProduction) {
+      console.log(`⚠️ CORS: Permitiendo origen no listado en modo desarrollo: ${requestOrigin}`);
+      return requestOrigin;
+    }
+    
+    console.log(`❌ CORS: Bloqueando origen no permitido: ${requestOrigin}`);
+    return false;
+  })();
+  
   // Configurar encabezados CORS
-  ctx.set('Access-Control-Allow-Origin', 'http://localhost:5172');
-  ctx.set('Access-Control-Allow-Credentials', 'true');
-  ctx.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  ctx.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+  if (allowOrigin) {
+    ctx.set('Access-Control-Allow-Origin', allowOrigin);
+    ctx.set('Access-Control-Allow-Credentials', 'true');
+    ctx.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    ctx.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+  }
   
   // Responder inmediatamente a las solicitudes OPTIONS
   if (ctx.method === 'OPTIONS') {
