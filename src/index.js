@@ -109,11 +109,13 @@ app.use(cors({
     console.log(`❌ CORS: Bloqueando origen no permitido: ${requestOrigin}`);
     return false; // Bloqueamos orígenes no permitidos en producción
   },
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
   credentials: true,
-  exposeHeaders: ['Content-Length', 'Date', 'X-Request-Id'],
-  maxAge: 86400 // 24 horas en segundos
+  maxAge: 86400, // 24 horas en segundos
+  
+  // Garantiza que el preflight OPTIONS se procese correctamente
+  optionsSuccessStatus: 204
 }));
 
 // Add a simple health check endpoint for connectivity testing
