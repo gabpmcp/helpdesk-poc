@@ -1521,38 +1521,22 @@ const setupApiRoutes = async (deps) => {
 export const initializeApi = async (app, deps = {}) => {
   // Configuración CORS unificada para todas las rutas
   app.use(async (ctx, next) => {
-    // Origen específico para permitir credenciales
     const requestOrigin = ctx.request.header.origin;
-    const allowedOrigins = [
-      'http://localhost:5172',
-      'https://localhost:5172',
-      'http://localhost:5173',
-      'https://localhost:5173'
-    ];
-    
-    // Permitir orígenes específicos
-    if (allowedOrigins.includes(requestOrigin)) {
+    const { corsOrigins } = getConfig().security;
+  
+    if (corsOrigins.includes(requestOrigin)) {
       ctx.set('Access-Control-Allow-Origin', requestOrigin);
       ctx.set('Access-Control-Allow-Credentials', 'true');
     } else {
-      // Para solicitudes de fuentes como curl sin origen, usar '*'
-      ctx.set('Access-Control-Allow-Origin', '*');
+      // En producción no uses '*' cuando esperas credenciales
+      ctx.set('Access-Control-Allow-Origin', 'null');
     }
-    
-    // Headers comunes para todas las solicitudes
-    ctx.set('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+    ctx.set('Access-Control-Allow-Headers',
+            'Origin, X-Requested-With, Content-Type, Accept, Authorization');
     ctx.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    ctx.set('Access-Control-Expose-Headers', 'Content-Length, Date, X-Request-Id');
-    
-    // Responder inmediatamente a OPTIONS
-    if (ctx.method === 'OPTIONS') {
-      ctx.status = 204;
-      return;
-    }
-    
-    // Log para depuración
-    console.log(`🔒 CORS Request from: ${requestOrigin || 'Unknown Origin'} to ${ctx.path}`);
-    
+  
+    if (ctx.method === 'OPTIONS') { ctx.status = 204; return; }
     await next();
   });
 
