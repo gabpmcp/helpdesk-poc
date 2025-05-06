@@ -10,6 +10,20 @@ import { Result, tryCatchAsync, deepFreeze, pipe } from '../utils/functional.js'
 // n8n configuration (should be in environment variables in production)
 const N8N_BASE_URL = process.env.N8N_BASE_URL || 'https://n8n.advancio.io';
 
+/**
+ * Pure function to normalize priority values to standard format
+ * @param {String} priority - Priority value from ticket
+ * @returns {String} - Normalized priority value: 'Urgent', 'High', 'Medium', 'Low'
+ */
+const normalizePriority = (priority) => {
+  const value = (priority || '').toLowerCase().replace(/\s+/g, '');
+  if (value.includes('urgent')) return 'Urgent';
+  if (value.includes('high')) return 'High';
+  if (value.includes('medium')) return 'Medium';
+  if (value.includes('low')) return 'Low';
+  return 'Medium'; // valor por defecto
+};
+
 // Normaliza la URL base para evitar problemas con barras al final
 const normalizeBaseUrl = (url) => {
   if (!url) return '';
@@ -104,21 +118,23 @@ const projectDashboardOverview = (rawData) => deepFreeze({
  * @param {Object} rawData - Raw data from n8n
  * @returns {Object} - Projected data
  */
-const projectTickets = (rawData) => deepFreeze({
-  tickets: (rawData.tickets || []).map(ticket => ({
-    id: ticket.id,
-    subject: ticket.subject,
-    status: ticket.status,
-    priority: ticket.priority,
-    department: ticket.departmentName,
-    contact: ticket.contactName,
-    createdAt: ticket.createdTime,
-    updatedAt: ticket.modifiedTime
-  })),
-  meta: rawData.meta || {},
-  lastUpdated: rawData.timestamp || new Date().toISOString(),
-  source: "zoho"
-});
+const projectTickets = (rawData) => {
+  return deepFreeze({
+    tickets: (rawData.tickets || []).map(ticket => ({
+      id: ticket.id,
+      subject: ticket.subject,
+      status: ticket.status,
+      priority: normalizePriority(ticket.priority),
+      department: ticket.departmentName,
+      contact: ticket.contactName,
+      createdAt: ticket.createdTime,
+      updatedAt: ticket.modifiedTime
+    })),
+    meta: rawData.meta || {},
+    lastUpdated: rawData.timestamp || new Date().toISOString(),
+    source: "zoho"
+  });
+};
 
 /**
  * Pure function to project dashboard contacts data
@@ -145,29 +161,41 @@ const projectContacts = (rawData) => deepFreeze({
  * @param {Object} rawData - Raw data from n8n
  * @returns {Object} - Projected data
  */
-const projectReportsOverview = (rawData) => deepFreeze({
-  ticketCount: rawData.ticketCount || 0,
-  openTicketCount: rawData.openTicketCount || 0,
-  urgentTicketCount: rawData.urgentTicketCount || 0,
-  responseTimeAvg: rawData.responseTimeAvg || 0,
-  satisfactionScore: rawData.satisfactionScore || 0,
-  metrics: {
-    ticketsByPriority: rawData.metrics?.ticketsByPriority || {
-      Low: 0,
-      Medium: 0,
-      High: 0,
-      Urgent: 0
+const projectReportsOverview = (rawData) => {
+  // Normalizar la estructura de ticketsByPriority
+  const rawTicketsByPriority = rawData.metrics?.ticketsByPriority || {};
+  const normalizedTicketsByPriority = {
+    Low: 0,
+    Medium: 0,
+    High: 0,
+    Urgent: 0
+  };
+  
+  // Procesar y normalizar cada entrada de prioridad
+  Object.entries(rawTicketsByPriority).forEach(([key, count]) => {
+    const normalizedKey = normalizePriority(key);
+    normalizedTicketsByPriority[normalizedKey] = (normalizedTicketsByPriority[normalizedKey] || 0) + (count || 0);
+  });
+  
+  return deepFreeze({
+    ticketCount: rawData.ticketCount || 0,
+    openTicketCount: rawData.openTicketCount || 0,
+    urgentTicketCount: rawData.urgentTicketCount || 0,
+    responseTimeAvg: rawData.responseTimeAvg || 0,
+    satisfactionScore: rawData.satisfactionScore || 0,
+    metrics: {
+      ticketsByPriority: normalizedTicketsByPriority,
+      ticketsByStatus: rawData.metrics?.ticketsByStatus || {
+        Open: 0, 
+        'In Progress': 0,
+        Closed: 0,
+        'On Hold': 0
+      }
     },
-    ticketsByStatus: rawData.metrics?.ticketsByStatus || {
-      Open: 0, 
-      'In Progress': 0,
-      Closed: 0,
-      'On Hold': 0
-    }
-  },
-  timestamp: rawData.timestamp || new Date().toISOString(),
-  source: "zoho"
-});
+    timestamp: rawData.timestamp || new Date().toISOString(),
+    source: "zoho"
+  });
+};
 
 /**
  * Pure function to project Zoho categories/departments data
